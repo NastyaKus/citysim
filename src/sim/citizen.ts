@@ -104,6 +104,12 @@ export interface Citizen {
   birthdayDay: number;
   controlled?: boolean;
   pausedUntil?: number;
+  rel?: Record<number, number>;
+  memories?: { t: number; who: number; text: string; d: number }[];
+  goal?: import('./goals').Goal;
+  favs?: Record<number, number>;
+  modeBias?: Partial<Record<Mode, number>>;
+  played?: number;
 }
 
 const SKINS = [0xf5d0b0, 0xe8b894, 0xd9a07a, 0xc68863, 0xa26a48, 0x8a5a3c, 0xf2c9a8];

@@ -12,10 +12,16 @@ import { HALF_CITY, ROAD_HALF } from './sim/world';
 import { P } from './render/palette';
 import { displayName } from './sim/citizen';
 import { Player } from './game/player';
+import { InteriorView, poseGroup } from './render/interior';
+import { DecorRenderer } from './render/decor';
+import { Editor } from './game/editor';
+import { PaperView } from './ui/paper';
+import { Album } from './ui/album';
 import { TouchControls } from './ui/touch';
 import { Sound } from './audio/sound';
 import { isTouch, canFullscreen, toggleFullscreen, lockLandscape, setupRotateHint, isStandalone } from './ui/mobile';
 import type { Params } from './sim/params';
+import { fmtTime } from './sim/params';
 
 const SAVE_KEYS = ['volume', 'ambVolume', 'fxVolume', 'muted', 'quality', 'renderScale', 'shadows', 'shadowRes', 'precipDensity', 'fpsLimit', 'showFps', 'treeSway', 'maxVisible', 'drawDistance'] as const;
 function loadPrefs(): Partial<Params> {
@@ -80,6 +86,12 @@ async function main() {
   scene.add(agents.group);
   const fx = new FxRenderer(sim);
   scene.add(fx.group);
+  const decor = new DecorRenderer(sim, city);
+  scene.add(decor.group);
+  decor.rebuild();
+  city.onRebuild = () => { props.rebuildStatic(); decor.rebuild(); };
+  sim.dynamics.onChanged = (b) => { city.rebuildBuilding(b); sound.play('build'); };
+  const interior = new InteriorView(sim);
   const sound = new Sound(sim);
   sim.onEnter = (b) => { if (['shop', 'food', 'health'].includes(b.def.cat) || b.type === 'post' || b.type === 'bank') sound.shopBell(b.entrance.pos.x, b.entrance.pos.z); };
   fx.onBurst = (x, z) => sound.firework(x, z);
@@ -160,17 +172,67 @@ async function main() {
     graphics: () => applyGraphics(),
     sound: () => { sound.unlock(); sound.applyVolumes(); savePrefs(sim.params); },
     click: () => sound.play('click'),
+    paper: () => paper.open(),
+    album: () => { void album.open(); },
+    editor: () => { if (player.active) stopPlay(); editor.toggle(); },
+    photo: () => takePhoto(),
   });
   ui.syncAll();
   (window as unknown as { __ui: unknown }).__ui = { ui, select: (s: Selection) => select(s), play: (id?: number) => startPlay(id), stop: () => stopPlay(), get player() { return player; }, get touch() { return touch; }, sound };
 
   // ——— режим игрока
-  const player = new Player(sim, city.collision, {
+  const player: Player = new Player(sim, city.collision, {
     toast: (t) => touch.toast(t),
     sound: (k, x, z) => sound.play(k, x, z),
     heart: (x, z) => { fx.heart(x, z); sound.play('heart'); },
+    enterRoom: (b) => { interior.build(b, player.c!); sound.indoor = true; playCamInit = false; return interior; },
+    exitRoom: () => { interior.clear(); sound.indoor = false; playCamInit = false; },
+    dialog: (npc) => { touch.openDialog(npc); sound.play('talk', npc.x, npc.z); },
   });
-  const touch = new TouchControls(sim, player, { exit: () => stopPlay(), click: () => sound.play('click') });
+  const touch: TouchControls = new TouchControls(sim, player, {
+    exit: () => stopPlay(),
+    click: () => sound.play('click'),
+    wait: (m) => { skipping = sim.clock.total + m; ui.skipping.style.display = 'block'; },
+    photo: () => takePhoto(),
+    openCard: (id) => { ui.show({ kind: 'citizen', id }); document.getElementById('inspector')!.classList.add('in-play'); },
+  });
+  const paper = new PaperView(sim, (id) => { select({ kind: 'citizen', id }); ui.following = true; flyToCitizen(id); }, () => sound.play('click'));
+  const album = new Album(() => sound.play('click'));
+  const editor = new Editor(sim, city, camera, { toast: (t) => touch.toast(t), click: () => sound.play('click'), sound: () => sound.play('build') });
+  scene.add(editor.marker);
+  function flyToCitizen(id: number) {
+    const c = sim.citizens[id];
+    if (c) flyTo(c.x, c.z);
+  }
+
+  // ——— фотоаппарат
+  const flash = document.createElement('div');
+  flash.className = 'flash';
+  document.getElementById('app')!.append(flash);
+  function takePhoto() {
+    sound.unlock();
+    sound.play('shutter');
+    renderer.render(player.room ? interior.scene : scene, camera);
+    const src = renderer.domElement;
+    const w = Math.min(960, src.width), h = Math.round((src.height / src.width) * w);
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    cv.getContext('2d')!.drawImage(src, 0, 0, w, h);
+    const data = cv.toDataURL('image/jpeg', 0.82);
+    const t = controls.target;
+    let place = '';
+    if (player.room?.building) place = player.room.building.name;
+    else {
+      let bd = Infinity;
+      for (const b of sim.world.buildings) { const d = Math.hypot(b.x - t.x, b.z - t.z); if (d < bd) { bd = d; place = b.name; } }
+    }
+    const who = player.room ? interior.npcs.slice(0, 3).map((n) => n.c.first) : sim.citizens.filter((c) => c.alive && (c.state === 'walk' || c.state === 'outdoor') && Math.hypot(c.x - t.x, c.z - t.z) < 12).slice(0, 3).map((c) => c.first);
+    const me = player.c ? `${player.c.first}` : '';
+    const caption = `${fmtTime(sim.clock.total)}, день ${sim.clock.day + 1} · ${sim.weather.def.emoji} · ${place}${me ? ` · ${me}` : ''}${who.length ? ` и ${who.join(', ')}` : ''}`;
+    void album.save(data, caption);
+    flash.classList.remove('go'); void flash.offsetWidth; flash.classList.add('go');
+    touch.toast('📷 Снимок сохранён в альбом');
+  }
   const camGoal = new THREE.Vector3();
   let playCamInit = false;
 
@@ -205,6 +267,7 @@ async function main() {
   }
 
   function select(s: Selection) {
+    document.getElementById('inspector')?.classList.remove('in-play');
     if (!s) { ui.following = false; ring.visible = false; }
     ui.show(s);
   }
@@ -243,6 +306,10 @@ async function main() {
   renderer.domElement.addEventListener('pointerdown', (e) => (downAt = { x: e.clientX, y: e.clientY }));
   renderer.domElement.addEventListener('pointerup', (e) => {
     if (player.active) return;
+    if (editor.active) {
+      if (Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) <= 6 && e.button === 0) editor.tap(e.clientX, e.clientY);
+      return;
+    }
     if (Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 5 || e.button !== 0) return;
     const s = pick(e.clientX, e.clientY);
     select(s);
@@ -251,7 +318,7 @@ async function main() {
   let hoverAt = 0;
   renderer.domElement.addEventListener('pointermove', (e) => {
     const now = performance.now();
-    if (now - hoverAt < 90 || e.buttons || e.pointerType !== 'mouse' || player.active) return;
+    if (now - hoverAt < 90 || e.buttons || e.pointerType !== 'mouse' || player.active || editor.active) { if (editor.active) ui.showTooltip(null, 0, 0); return; }
     hoverAt = now;
     const s = pick(e.clientX, e.clientY);
     if (!s) return ui.showTooltip(null, 0, 0);
@@ -297,6 +364,7 @@ async function main() {
   let uiAt = 0, winAt = 0;
   let keysWasMoving = false, shiftWas = false;
   let lastNewsId = -1;
+  let roomPhase = 0;
   let fpsFrames = 0, fpsChecked = false;
   const col = new THREE.Color();
   const grassCol = new THREE.Color();
@@ -349,15 +417,26 @@ async function main() {
       keysWasMoving = !!(kx || kz);
       if (keys.has('ShiftLeft') || keys.has('ShiftRight')) player.input.run = true; else if (shiftWas) player.input.run = false;
       shiftWas = keys.has('ShiftLeft') || keys.has('ShiftRight');
-      player.update(dt);
+      if (!touch.dialogOpen) player.update(dt); else { player.c!.moving = 0; player.roomMoving = 0; }
       touch.update(dt);
       const c = player.c!;
       const h = 1.45 * c.look.height + 0.2;
-      const tx = c.x, ty = h, tz = c.z;
+      const inRoom = !!player.room;
+      const tx = inRoom ? player.rx : c.x, ty = h, tz = inRoom ? player.rz : c.z;
+      if (inRoom) {
+        interior.update(dt, time, env.daylight, c);
+        const pm = interior.playerModel;
+        if (pm) {
+          pm.position.set(player.rx, 0, player.rz);
+          pm.rotation.y = Math.atan2(player.rdirX, player.rdirZ);
+          roomPhase += player.roomMoving * dt * 2.2;
+          poseGroup(pm, c.act ? player.roomPose : 'stand', roomPhase, player.roomMoving > 0.2);
+        }
+      }
       const cp = Math.cos(player.pitch), sp = Math.sin(player.pitch);
       let d = player.dist;
       const ox = Math.sin(player.yaw) * cp, oy = sp, oz = Math.cos(player.yaw) * cp;
-      const free = city.collision.rayBlock(tx, ty, tz, tx + ox * d, ty + oy * d, tz + oz * d);
+      const free = (inRoom ? interior.collision : city.collision).rayBlock(tx, ty, tz, tx + ox * d, ty + oy * d, tz + oz * d);
       d *= free;
       camGoal.set(tx + ox * d, Math.max(0.6, ty + oy * d), tz + oz * d);
       if (!playCamInit) { camera.position.copy(camGoal); playCamInit = true; }
@@ -468,10 +547,14 @@ async function main() {
     }
     routes.visible = sim.params.showRoutes;
 
+    const inRoom = !!player.room;
+    if (!inRoom) {
     if (time - winAt > 0.3) { winAt = time; updateWindows(); }
     props.update(dt, time, night);
     agents.update(dt, gdt, time, night);
     fx.update(dt, time, night);
+    decor.update(night);
+    }
 
     // подпись над выбранным
     if (followPos && sim.params.labels && sel?.kind === 'citizen' && !player.active) {
@@ -486,7 +569,7 @@ async function main() {
     } else ui.label.style.display = 'none';
 
     if (time - uiAt > 0.25) { uiAt = time; ui.update(); }
-    renderer.render(scene, camera);
+    renderer.render(inRoom ? interior.scene : scene, camera);
   }
   requestAnimationFrame(frame);
 }

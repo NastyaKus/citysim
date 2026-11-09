@@ -99,14 +99,37 @@ export class Props {
   private rng = new RNG(8);
   readonly smoke: Particles;
 
+  private sg = new THREE.Group();
+
   constructor(private sim: Sim, private city: CityMeshes) {
     this.smoke = new Particles(3000, 'smoke');
-    this.group.add(this.smoke.points);
+    this.group.add(this.smoke.points, this.sg);
     this.buildTrees(city.trees);
     this.buildLamps(city.lamps);
     this.buildTrafficLights();
     this.buildDyn(city.dyn);
     this.buildSnowmen();
+  }
+
+  /** пересобрать деревья, фонари и анимированные объекты после перестройки */
+  rebuildStatic() {
+    this.group.remove(this.sg);
+    this.sg.traverse((o) => { const m = o as THREE.Mesh; if (m.geometry) m.geometry.dispose(); });
+    this.sg = new THREE.Group();
+    this.group.add(this.sg);
+    this.crowns = [];
+    this.caps = [];
+    this.flags = [];
+    this.fountains = [];
+    this.floodlights = [];
+    this.chimneys = [];
+    this.crane = undefined;
+    this.construction = undefined;
+    this.ducks = undefined;
+    this.season = '';
+    this.buildTrees(this.city.trees);
+    this.buildLamps(this.city.lamps);
+    this.buildDyn(this.city.dyn);
   }
 
   private buildTrees(specs: TreeSpec[]) {
@@ -135,7 +158,7 @@ export class Props {
       });
       for (const mesh of [trunk, crown]) { mesh.castShadow = true; mesh.receiveShadow = true; }
       if (kind === 'bush') trunk.count = 0;
-      this.group.add(trunk, crown, cap);
+      this.sg.add(trunk, crown, cap);
       this.crowns.push({ mesh: crown, specs: list, kind });
     }
     this.applySeason();
@@ -179,7 +202,7 @@ export class Props {
     });
     this.pools.renderOrder = 3;
     this.lampState = new Uint8Array(lamps.length).fill(2);
-    this.group.add(this.lampHeads, this.pools);
+    this.sg.add(this.lampHeads, this.pools);
   }
 
   private buildTrafficLights() {
@@ -211,7 +234,7 @@ export class Props {
         jib.position.set(d.x, 23.4, d.z);
         jib.castShadow = true;
         this.crane = jib;
-        this.group.add(mm, jib);
+        this.sg.add(mm, jib);
       } else if (d.kind === 'construction') {
         const b = this.sim.world.buildings[d.b];
         const g = new GB();
@@ -226,7 +249,7 @@ export class Props {
         const scaffold = new THREE.Mesh(sg.build(), mat);
         scaffold.position.set(d.x, d.y, d.z);
         this.construction = { mesh, b: d.b, maxH: (d.s ?? 10) * 3.2, scaffold };
-        this.group.add(mesh, scaffold);
+        this.sg.add(mesh, scaffold);
       } else if (d.kind === 'flag') {
         const g = new THREE.PlaneGeometry(1.8, 1.2, 6, 3);
         const cols: number[] = [];
@@ -241,7 +264,7 @@ export class Props {
         mesh.position.set(d.x, d.y, d.z);
         mesh.rotation.y = d.ry;
         this.flags.push({ mesh, base: Float32Array.from(pos.array as Float32Array) });
-        this.group.add(mesh);
+        this.sg.add(mesh);
       } else if (d.kind === 'ducks') {
         const g = new GB();
         g.box(0.7, 0.4, 0.4, 0xffffff, 0, 0, 0);
@@ -249,14 +272,14 @@ export class Props {
         g.box(0.2, 0.08, 0.12, 0xf4a261, 0.55, 0.45, 0);
         const mesh = new THREE.InstancedMesh(g.build(), mat, 7);
         this.ducks = { mesh, cx: d.x, cz: d.z, r: d.s ?? 7 };
-        this.group.add(mesh);
+        this.sg.add(mesh);
       } else if (d.kind === 'fountain') {
         const g = new THREE.ConeGeometry(0.5 * (d.s ?? 1), 2.4 * (d.s ?? 1), 8, 1, true);
         const mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0xbfe9ff, transparent: true, opacity: 0.55, depthWrite: false }));
         mesh.position.set(d.x, d.y + 1.2 * (d.s ?? 1), d.z);
         mesh.rotation.x = Math.PI;
         this.fountains.push({ mesh, s: d.s ?? 1 });
-        this.group.add(mesh);
+        this.sg.add(mesh);
       } else if (d.kind === 'chimney') {
         this.chimneys.push(d);
       } else if (d.kind === 'floodlight') {
@@ -264,7 +287,7 @@ export class Props {
         mesh.position.set(d.x, d.y, d.z);
         mesh.lookAt(this.sim.world.buildings[d.b].x, 0, this.sim.world.buildings[d.b].z);
         this.floodlights.push(mesh);
-        this.group.add(mesh);
+        this.sg.add(mesh);
       }
     }
   }

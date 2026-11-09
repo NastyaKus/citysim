@@ -266,7 +266,7 @@ export class Brain {
       let mMul = 1;
       if (price > 0) {
         if (c.money < price) mMul = 0.01;
-        else mMul = Math.exp(-price / (c.money * 0.2 + 15));
+        else mMul = Math.exp(-price / (c.money * 0.2 + 15)) * (sim.goals.saving(c) ? 0.55 : 1);
       }
       // расстояние
       let dMul = 1;
@@ -375,7 +375,8 @@ export class Brain {
     if (!cand.length) return undefined;
     return this.rng.weighted(cand, (b) => {
       const d = Math.abs(b.entrance.pos.x - c.x) + Math.abs(b.entrance.pos.z - c.z);
-      return b.attraction * Math.exp(-d / 160) * (b.priceMul < 1 ? 1.6 : 1) + 0.001;
+      const fav = c.favs?.[b.id] ?? 0;
+      return b.attraction * Math.exp(-d / 160) * (b.priceMul < 1 ? 1.6 : 1) * (1 + Math.min(4, fav) * 0.5) + 0.001;
     });
   }
 
@@ -400,6 +401,13 @@ export class Brain {
     c.actEnd = now + Math.max(5, dur);
     c.actPlace = placeId;
     c.trip = null;
+    if (placeId !== c.home && placeId !== c.work) {
+      sim.dynamics.visit(b);
+      if (!['work', 'sleep', 'evacuated', 'hospitalized', 'maternity'].includes(act.id)) {
+        c.favs = c.favs ?? {};
+        c.favs[placeId] = Math.min(6, (c.favs[placeId] ?? 0) + (c.controlled ? 2.5 : 0.12));
+      }
+    }
     if (c.at !== placeId) {
       if (c.at >= 0) this.world.buildings[c.at]?.inside.delete(c.id);
       c.at = placeId;
@@ -547,7 +555,7 @@ export class Brain {
     const disc = w.discomfort();
     const opts: { mode: Mode; cost: number; bus?: { board: BusStop; alight: BusStop } }[] = [];
     const moneySens = 4 / (c.money / 150 + 0.3) * c.traits.reduce((a, t) => a * (t.spend ? 1 / t.spend : 1), 1);
-    const modeMul = (m: Mode) => c.traits.reduce((a, t) => a * (t.modes?.[m] ?? 1), 1);
+    const modeMul = (m: Mode) => c.traits.reduce((a, t) => a * (t.modes?.[m] ?? 1), 1) * (1 + (c.modeBias?.[m] ?? 0));
     const ageWalk = c.age > 70 ? 0.7 : 1;
     // пешком
     const walkT = d / (WALK * ageWalk * (w.icy ? 0.75 : 1) * (1 - w.snowCover * 0.2));
@@ -681,6 +689,8 @@ export class Brain {
     if (c.job.id === 'unemployed' && c.age < 63) target -= 6;
     if (c.partner >= 0) target += 3;
     if (c.dogLost) target -= 25;
+    target += (this.world.buildings[c.home]?.decorBonus ?? 0) * 0.6;
+    if (this.sim.social.celebrities.includes(c.id)) target += 5;
     target += this.sim.mods.moodBonus;
     c.mood += (clamp(target, 0, 100) - c.mood) * Math.min(1, hours * 0.6);
   }

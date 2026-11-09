@@ -6,12 +6,18 @@ import type { Building } from '../sim/world';
 import { HALF_CITY, isOpen } from '../sim/world';
 import { ACTIVITIES, ACTIVITY_BY_ID, ActivityDef, gender } from '../sim/content/activities';
 import type { Collision } from './collision';
+import type { InteriorView, Spot, Pose } from '../render/interior';
+import { JOBS } from '../sim/content/jobs';
+import { PRICES } from '../sim/goals';
+import { DISTRICT_NAMES } from '../sim/world';
 
 export type Target =
   | { kind: 'building'; b: Building; label: string }
   | { kind: 'outdoor'; b: Building; label: string }
   | { kind: 'citizen'; c: Citizen; label: string }
-  | { kind: 'dog'; c: Citizen; label: string };
+  | { kind: 'dog'; c: Citizen; label: string }
+  | { kind: 'spot'; spot: Spot; label: string }
+  | { kind: 'npc'; c: Citizen; label: string };
 
 export interface ActivityOption {
   act: ActivityDef;
@@ -24,8 +30,14 @@ export interface PlayerHooks {
   toast: (text: string) => void;
   sound: (kind: 'door' | 'talk' | 'bark' | 'beep' | 'step', x?: number, z?: number) => void;
   heart: (x: number, z: number) => void;
+  enterRoom: (b: Building) => InteriorView;
+  exitRoom: () => void;
+  dialog: (npc: Citizen) => void;
 }
 
+export interface Special { emoji: string; label: string; sub: string; disabled?: string; run: () => void; submenu?: () => Special[] }
+
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const HOME_ACTS = ['sleep', 'nap', 'breakfast', 'eat_home', 'cook', 'tv', 'games', 'read_home', 'music_home', 'call', 'cleaning'];
 const OUTDOOR_ACTS = ['bench', 'picnic', 'ducks', 'snowman', 'snowballs', 'playground', 'street_music', 'icecream'];
 
@@ -40,18 +52,39 @@ export class Player {
   private stepAcc = 0;
   private prevSpeed = 1;
   fastForward = false;
+  room: InteriorView | null = null;
+  rx = 0;
+  rz = 0;
+  rdirX = 0;
+  rdirZ = -1;
+  roomPose: Pose = 'stand';
+  roomMoving = 0;
+  /** приглашение: житель ждёт в месте */
+  meeting: { npc: number; b: number; until: number } | null = null;
 
   constructor(private sim: Sim, private col: Collision, private hooks: PlayerHooks) {
     sim.onPlayerActivityEnd = (c) => {
-      if (c !== this.c) return;
+      if (c !== this.c) return false;
       this.stopFastForward();
-      hooks.sound('door', c.x, c.z);
       hooks.toast(`Готово: ${c.diary[0]?.text ?? 'занятие закончилось'}`);
+      if (this.room?.building) {
+        // остаёмся в комнате, встаём рядом с местом
+        c.act = null;
+        this.roomPose = 'stand';
+        this.rz += 0.8;
+        return true;
+      }
+      hooks.sound('door', c.x, c.z);
+      return false;
     };
   }
 
   get active() {
     return !!this.c;
+  }
+
+  hooks_heart(npc: Citizen) {
+    this.hooks.heart(npc.x, npc.z);
   }
 
   /** взять жителя под управление; строка — причина отказа */
@@ -83,6 +116,7 @@ export class Player {
     const c = this.c;
     if (!c) return;
     this.stopFastForward();
+    if (this.room) this.exitRoom(true);
     if (c.act && c.state !== 'outdoor') {
       // оставляем занятие — дальше житель сам
     } else if (c.act) {
@@ -105,6 +139,7 @@ export class Player {
     const c = this.c;
     if (!c) return;
     const sim = this.sim;
+    if (this.room) return this.updateRoom(dt);
     sim.transport.obstacles = c.state === 'inside' ? [] : [{ x: c.x, z: c.z }];
     if (c.state === 'inside') { c.moving = 0; return; }
     const ix = this.input.x, iz = this.input.z;
@@ -294,38 +329,11 @@ export class Player {
     const sim = this.sim;
     if (t.kind === 'citizen') {
       const o = t.c;
-      const known = c.friends.includes(o.id) || c.household.includes(o.id) || c.partner === o.id;
-      c.needs.social = Math.min(100, c.needs.social + 25);
-      c.needs.fun = Math.min(100, c.needs.fun + 5);
-      o.needs.social = Math.min(100, o.needs.social + 20);
-      o.pausedUntil = sim.clock.total + 1.5;
+      o.pausedUntil = sim.clock.total + 3;
       o.dirX = c.x - o.x; o.dirZ = c.z - o.z;
       const l = Math.hypot(o.dirX, o.dirZ) || 1;
       o.dirX /= l; o.dirZ /= l;
-      this.hooks.sound('talk', o.x, o.z);
-      if (known) {
-        const topic = sim.rng.pick(['погоду', 'новости города', 'цены', 'вчерашний матч', 'сериалы', 'соседей', 'музыку', 'планы на выходные']);
-        sim.brain.log(c, `поболтал${c.female ? 'а' : ''} с ${o.first} про ${topic}`);
-        sim.brain.log(o, `поболтал${o.female ? 'а' : ''} с ${c.first} про ${topic}`);
-        this.hooks.toast(`Вы с ${o.first} поболтали про ${topic} 💬`);
-      } else {
-        let p = 0.45;
-        if (hasTrait(o, 'social')) p += 0.3;
-        if (hasTrait(o, 'introvert')) p -= 0.25;
-        if (hasTrait(c, 'social')) p += 0.1;
-        if (o.mood < 40) p -= 0.15;
-        if (Math.abs(o.age - c.age) > 25) p -= 0.15;
-        if (sim.rng.chance(p)) {
-          c.friends.push(o.id);
-          o.friends.push(c.id);
-          sim.brain.log(c, gender(`познакомил{ся|ась} и подружил{ся|ась}: ${o.first}`, c.female));
-          sim.brain.log(o, gender(`познакомил{ся|ась} и подружил{ся|ась}: ${c.first}`, o.female));
-          sim.news.push('🤝', `${displayName(c)} и ${displayName(o)} познакомились на улице и подружились`, 'people', { citizen: c.id });
-          this.hooks.toast(`${o.first} теперь ${o.female ? 'твоя подруга' : 'твой друг'}! 🤝`);
-        } else {
-          this.hooks.toast(sim.rng.pick([`${o.first} вежливо кивнул${o.female ? 'а' : ''} и пош${o.female ? 'ла' : 'ёл'} дальше`, `${o.first} торопится — может, в другой раз`, `${o.first} не в настроении болтать`]));
-        }
-      }
+      this.hooks.dialog(o);
       return null;
     }
     if (t.kind === 'dog') {
@@ -340,8 +348,193 @@ export class Player {
       this.hooks.toast(`${o.dogName} радостно виляет хвостом 🐶`);
       return null;
     }
+    if (t.kind === 'npc') { this.hooks.dialog(t.c); return null; }
+    if (t.kind === 'spot') return this.useSpot(t.spot);
     const closed = t.kind === 'building' ? this.closedText(t.b) : null;
     if (closed) { this.hooks.toast(closed); this.hooks.sound('beep'); return null; }
+    if (t.kind === 'building') { this.enterRoom(t.b); return null; }
     return t.b;
+  }
+
+  // ——— интерьер
+  enterRoom(b: Building) {
+    const c = this.c!;
+    const sim = this.sim;
+    c.at = b.id;
+    b.inside.add(c.id);
+    c.state = 'inside';
+    c.act = null;
+    c.x = b.entrance.pos.x; c.z = b.entrance.pos.z;
+    sim.transport.obstacles = [];
+    this.room = this.hooks.enterRoom(b);
+    this.rx = this.room.door.x;
+    this.rz = this.room.door.z - 0.8;
+    this.rdirX = 0; this.rdirZ = -1;
+    this.roomPose = 'stand';
+    this.yaw = 0;
+    this.pitch = 0.42;
+    this.dist = 5.5;
+    this.target = null;
+    this.hooks.sound('door', c.x, c.z);
+    if (b.id !== c.home && !['office', 'industry'].includes(b.def.cat)) sim.dynamics.visit(b);
+    // встреча по приглашению
+    if (this.meeting && this.meeting.b === b.id && sim.clock.total < this.meeting.until) {
+      const o = sim.citizens[this.meeting.npc];
+      if (o?.at === b.id) {
+        sim.social.add(o, c, 15, 'провели время вместе', 0.9);
+        sim.brain.log(c, `встреча: ${o.first} — ${b.name}`);
+        this.hooks.toast(`${o.first} уже здесь и машет тебе 👋`);
+        this.meeting = null;
+      }
+    }
+  }
+
+  exitRoom(silent = false) {
+    const c = this.c!;
+    const sim = this.sim;
+    const b = this.room?.building;
+    if (c.act) { this.stopFastForward(); sim.brain.endActivity(c); }
+    c.act = null;
+    if (b) {
+      b.inside.delete(c.id);
+      c.x = b.entrance.pos.x; c.z = b.entrance.pos.z;
+    }
+    c.at = -1;
+    c.state = 'walk';
+    this.room = null;
+    this.yaw = Math.atan2(-c.dirX, -c.dirZ);
+    this.pitch = 0.38;
+    this.dist = 9;
+    if (!silent) this.hooks.sound('door', c.x, c.z);
+    this.hooks.exitRoom();
+  }
+
+  private updateRoom(dt: number) {
+    const c = this.c!;
+    const room = this.room!;
+    const ix = this.input.x, iz = this.input.z;
+    const mag = Math.min(1, Math.hypot(ix, iz));
+    if (c.act && mag > 0.35) { this.sim.brain.endActivity(c); c.act = null; this.roomPose = 'stand'; this.stopFastForward(); }
+    if (c.act) { this.roomMoving = 0; return; }
+    if (mag > 0.08) {
+      const fx = -Math.sin(this.yaw), fz = -Math.cos(this.yaw);
+      const rx = -fz, rz = fx;
+      let mx = fx * -iz + rx * ix, mz = fz * -iz + rz * ix;
+      const ml = Math.hypot(mx, mz) || 1;
+      mx /= ml; mz /= ml;
+      const speed = (this.input.run ? 5 : 3) * mag;
+      const p = { x: this.rx + mx * speed * dt, z: this.rz + mz * speed * dt };
+      room.collision.resolve(p, 0.35);
+      p.x = Math.max(-room.w / 2 + 0.5, Math.min(room.w / 2 - 0.5, p.x));
+      p.z = Math.max(-room.d / 2 + 0.5, Math.min(room.d / 2 - 0.4, p.z));
+      const moved = Math.hypot(p.x - this.rx, p.z - this.rz);
+      this.rx = p.x; this.rz = p.z;
+      this.rdirX = mx; this.rdirZ = mz;
+      this.roomMoving = moved / Math.max(dt, 1e-4);
+      this.stepAcc += moved;
+      if (this.stepAcc > 0.9) { this.stepAcc = 0; this.hooks.sound('step'); }
+    } else this.roomMoving = 0;
+    this.targetAt -= dt;
+    if (this.targetAt <= 0) {
+      this.targetAt = 0.12;
+      const n = room.nearest(this.rx, this.rz);
+      if (!n) this.target = null;
+      else if (n.npc) {
+        const known = c.rel?.[n.npc.id] !== undefined;
+        this.target = { kind: 'npc', c: n.npc, label: `💬 ${known ? 'Поговорить' : 'Познакомиться'}: ${n.npc.first}` };
+      } else if (n.spot) {
+        const sp = n.spot;
+        if (sp.acts.includes('__exit')) this.target = { kind: 'spot', spot: sp, label: '🚪 Выйти на улицу' };
+        else {
+          const ok = this.spotOptions(sp);
+          this.target = { kind: 'spot', spot: sp, label: ok.length ? `${ok[0].act.emoji} ${cap(sp.label)}: ${ok.length > 1 ? 'выбрать' : ok[0].act.label}` : `${cap(sp.label)} — сейчас нечего делать` };
+        }
+      }
+    }
+  }
+
+  spotOptions(sp: Spot): ActivityOption[] {
+    const b = this.room?.building;
+    if (!b) return [];
+    return this.options(b).filter((o) => !o.disabled && sp.acts.includes(o.act.id));
+  }
+
+  /** использовать место; вернёт здание, если нужно показать список */
+  private useSpot(sp: Spot): Building | null {
+    if (sp.acts.includes('__exit')) { this.exitRoom(); return null; }
+    const ok = this.spotOptions(sp);
+    if (!ok.length) { this.hooks.toast('Здесь сейчас нечем заняться'); return null; }
+    if (ok.length === 1) { this.startAtSpot(sp, ok[0]); return null; }
+    this.pendingSpot = sp;
+    return this.room!.building;
+  }
+
+  pendingSpot: Spot | null = null;
+
+  startAtSpot(sp: Spot | null, opt: ActivityOption) {
+    const b = this.room?.building;
+    const c = this.c;
+    if (!b || !c) return;
+    const sim = this.sim;
+    if (opt.act.id === 'work' && b.id !== c.work) return;
+    sim.brain.beginActivity(c, opt.act, b.id, opt.dur, opt.act.id === 'work' ? (sim.brain.shiftWindow(c)?.[0] ?? 0) : 0);
+    if (['work', 'school', 'study'].includes(opt.act.id)) c.shiftDay = Math.floor((sim.brain.shiftWindow(c)?.[0] ?? sim.clock.total) / 1440);
+    c.state = 'inside';
+    if (sp) { this.rx = sp.x; this.rz = sp.z; this.rdirX = -Math.sin(sp.ry + Math.PI); this.rdirZ = -Math.cos(sp.ry + Math.PI); this.roomPose = sp.pose; }
+    else this.roomPose = 'stand';
+    this.pendingSpot = null;
+    // встреча по приглашению
+    if (this.meeting && this.meeting.b === b.id) {
+      const o = sim.citizens[this.meeting.npc];
+      if (o?.at === b.id) { sim.social.add(o, c, 15, 'провели время вместе', 0.9); this.hooks.toast(`Вы с ${o.first} отлично провели время 💛`); this.meeting = null; }
+    }
+  }
+
+  /** особые действия в здании: работа, покупки, переезд */
+  specials(b: Building): Special[] {
+    const c = this.c!;
+    const sim = this.sim;
+    const out: Special[] = [];
+    const jobsHere = JOBS.filter((j) => j.places.includes(b.type) && c.age >= j.ages[0] && c.age <= j.ages[1]);
+    if (b.id !== c.work && b.def.cat !== 'home' && !b.def.outdoor && jobsHere.length) {
+      for (const j of jobsHere.slice(0, 3)) {
+        const name = c.female && j.nameF ? j.nameF : j.name;
+        out.push({ emoji: '💼', label: `Устроиться: ${name}`, sub: `${Math.round(j.salary * sim.params.wageLevel)}₽ в день · ${String(j.shift[0]).padStart(2, '0')}:00–${String(j.shift[1] % 24).padStart(2, '0')}:00`, disabled: c.age < 16 ? 'рано работать' : undefined, run: () => this.takeJob(b, j.id) });
+      }
+    }
+    if (b.type === 'autoservice' || b.type === 'gasstation') out.push({ emoji: '🚗', label: 'Купить машину', sub: `${PRICES.car}₽`, disabled: c.hasCar ? 'уже есть' : c.age < 18 ? 'нет прав' : c.money < PRICES.car ? `нужно ${PRICES.car}₽` : undefined, run: () => { if (sim.goals.buyCar(c)) { this.done(`Купил${c.female ? 'а' : ''} машину! Теперь можно ездить на работу`, '🚗'); if (c.goal?.kind === 'car') sim.goals.achieve(c); } } });
+    if (['supermarket', 'market', 'gym', 'autoservice'].includes(b.type)) out.push({ emoji: '🚲', label: 'Купить велосипед', sub: `${PRICES.bike}₽`, disabled: c.hasBike ? 'уже есть' : c.money < PRICES.bike ? `нужно ${PRICES.bike}₽` : undefined, run: () => { if (sim.goals.buyBike(c)) { this.done(`Купил${c.female ? 'а' : ''} велосипед — теперь он${c.female ? 'а' : ''} будет на нём ездить`, '🚲'); if (c.goal?.kind === 'bike') sim.goals.achieve(c); } } });
+    if (b.type === 'bank' || b.type === 'cityhall') {
+      out.push({ emoji: '🏠', label: 'Агентство: переехать', sub: `${PRICES.move}₽ за переезд`, disabled: c.money < PRICES.move ? `нужно ${PRICES.move}₽` : undefined, run: () => undefined, submenu: () => {
+        const members = 1 + c.household.filter((id) => sim.citizens[id]?.alive).length;
+        return sim.world.buildings.filter((h) => h.def.cat === 'home' && h.id !== c.home && h.homeCapacity - h.residents.length >= members).slice(0, 8).map((h) => ({ emoji: h.type === 'house' ? '🏡' : '🏢', label: h.name, sub: `${h.def.name} · р-н ${DISTRICT_NAMES[h.district]} · свободно ${h.homeCapacity - h.residents.length}`, run: () => { if (sim.goals.moveHouse(c, h.id)) { this.done(`Переезд! Новый дом: ${h.name}`, '🏠'); if (c.goal?.kind === 'move') sim.goals.achieve(c); } } }));
+      } });
+    }
+    if (b.type === 'cityhall') {
+      out.push({ emoji: '📋', label: 'Биржа труда: вакансии', sub: 'любая работа в городе', run: () => undefined, submenu: () => sim.rng.shuffle(JOBS.filter((j) => c.age >= j.ages[0] && c.age <= j.ages[1] && j.places.some((p) => sim.world.byType.has(p)))).slice(0, 6).map((j) => ({ emoji: '💼', label: c.female && j.nameF ? j.nameF : j.name, sub: `${Math.round(j.salary * sim.params.wageLevel)}₽ в день`, run: () => this.takeJob(null, j.id) })) });
+    }
+    return out;
+  }
+
+  private done(text: string, emoji: string) {
+    const c = this.c!;
+    this.sim.brain.log(c, text);
+    this.sim.news.push(emoji, `${displayName(c)}: ${text.charAt(0).toLowerCase() + text.slice(1)}`, 'people', { citizen: c.id });
+    this.hooks.toast(text);
+  }
+
+  takeJob(b: Building | null, jobId: string) {
+    const c = this.c!;
+    const sim = this.sim;
+    const job = JOBS.find((j) => j.id === jobId);
+    if (!job) return;
+    sim.goals.changeJob(c, 0, job);
+    if (b && c.work !== b.id) {
+      if (c.work >= 0) { const w = sim.world.buildings[c.work]; w.workers = w.workers.filter((x) => x !== c.id); }
+      c.work = b.id;
+      b.workers.push(c.id);
+    }
+    const wb = c.work >= 0 ? sim.world.buildings[c.work] : null;
+    this.done(`Устроил${c.female ? 'ась' : 'ся'} на работу: ${c.female && job.nameF ? job.nameF : job.name}${wb ? ` — ${wb.name}` : ''}. Смена с ${String(job.shift[0]).padStart(2, '0')}:00`, '💼');
   }
 }

@@ -92,6 +92,7 @@ export const BUILDINGS: BuildingDef[] = [
   { id: 'park', name: 'Парк', cat: 'outdoor', size: 'block', floors: [0, 0], open: null, capacity: 150, outdoor: true, zones: [], weight: 0, colors: [0x7cb518], prefix: 'Парк' },
   { id: 'square', name: 'Сквер', cat: 'outdoor', size: 'lot', floors: [0, 0], open: null, capacity: 30, outdoor: true, zones: ['center', 'mid', 'outer'], weight: 0.7, min: 2, max: 4, colors: [0x90be6d], prefix: 'Сквер' },
   { id: 'pond', name: 'Пруд', cat: 'outdoor', size: 'block', floors: [0, 0], open: null, capacity: 80, outdoor: true, zones: [], weight: 0, colors: [0x4ea8de], prefix: 'Пруд' },
+  { id: 'nook', name: 'Уголок отдыха', cat: 'outdoor', size: 'lot', floors: [0, 0], open: null, capacity: 6, outdoor: true, zones: [], weight: 0, colors: [0x90be6d], prefix: 'Лавочка' },
   { id: 'playground', name: 'Детская площадка', cat: 'outdoor', size: 'lot', floors: [0, 0], open: null, capacity: 20, outdoor: true, zones: ['mid', 'outer'], weight: 0.6, min: 1, max: 3, colors: [0xf94144, 0xf9c74f, 0x43aa8b], prefix: 'Площадка' },
 ];
 

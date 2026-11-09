@@ -9,6 +9,12 @@ export class Collision {
   circles: Circle[] = [];
   private grid = new Map<number, { b: number[]; c: number[] }>();
 
+  clear() {
+    this.boxes = [];
+    this.circles = [];
+    this.grid.clear();
+  }
+
   private key(ix: number, iz: number) {
     return (ix + 500) * 1000 + (iz + 500);
   }

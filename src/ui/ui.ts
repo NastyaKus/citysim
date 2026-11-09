@@ -8,6 +8,7 @@ import { isOpen, DISTRICT_NAMES } from '../sim/world';
 import { VEHICLE_INFO } from '../sim/transport';
 import { EVENTS, EventCat } from '../sim/events';
 import { sparkline } from './charts';
+import { relWord } from '../sim/social';
 
 export type Selection = { kind: 'citizen' | 'building' | 'vehicle'; id: number } | null;
 
@@ -24,6 +25,10 @@ export interface UIHooks {
   graphics: () => void;
   sound: () => void;
   click: () => void;
+  paper: () => void;
+  album: () => void;
+  editor: () => void;
+  photo: () => void;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string, string> = {}, html = ''): HTMLElementTagNameMap[K] {
@@ -89,8 +94,12 @@ export class UI {
     this.top.innerHTML = `<span class="brand">🏙️ Городок</span><span class="sep"></span>
       <div><div class="clock" id="tb-clock">06:30</div></div><div class="day" id="tb-day"></div><span class="sep"></span>
       <div class="weather" id="tb-weather"></div><span class="sep"></span><div class="speeds" id="tb-speeds"></div>
-      <div class="tb-tools"><button id="tb-play" title="Играть за жителя">🎮</button><button id="tb-sound" title="Звук">🔊</button><button id="tb-fs" title="Полный экран">⛶</button></div>`;
+      <div class="tb-tools"><button id="tb-paper" title="Газета «Наш город»">📰<i class="dot" hidden></i></button><button id="tb-edit" title="Редактор города">🛠</button><button id="tb-photo" title="Снимок">📷</button><button id="tb-album" title="Альбом">🖼</button><button id="tb-play" title="Играть за жителя">🎮</button><button id="tb-sound" title="Звук">🔊</button><button id="tb-fs" title="Полный экран">⛶</button></div>`;
     this.q<HTMLButtonElement>('#tb-play', this.top).onclick = () => { this.hooks.click(); this.hooks.play(this.selection?.kind === 'citizen' ? this.selection.id : undefined); };
+    this.q<HTMLButtonElement>('#tb-paper', this.top).onclick = () => { this.hooks.click(); this.hooks.paper(); };
+    this.q<HTMLButtonElement>('#tb-edit', this.top).onclick = () => { this.hooks.click(); this.hooks.editor(); };
+    this.q<HTMLButtonElement>('#tb-photo', this.top).onclick = () => this.hooks.photo();
+    this.q<HTMLButtonElement>('#tb-album', this.top).onclick = () => { this.hooks.click(); this.hooks.album(); };
     this.q<HTMLButtonElement>('#tb-sound', this.top).onclick = () => { this.p.muted = !this.p.muted; this.hooks.sound(); this.syncAll(); this.hooks.click(); };
     const fs = this.q<HTMLButtonElement>('#tb-fs', this.top);
     fs.onclick = () => { this.hooks.click(); this.hooks.fullscreen(); };
@@ -338,6 +347,8 @@ export class UI {
       <div class="stat-title"><span>В пути за сутки</span></div><canvas class="spark" id="c-trav"></canvas>
       <div class="stat-title"><span>Машин на дорогах</span></div><canvas class="spark" id="c-cars"></canvas>
       <div class="stat-title"><span>Сейчас в городе</span></div><div id="active-ev"></div>
+      <div class="stat-title"><span>Районы</span></div><div id="districts"></div>
+      <div class="stat-title"><span>Культура города</span></div><div class="kv" id="culture"></div>
       <div class="stat-title"><span>Экономика дня</span></div><div class="kv" id="econ"></div>`;
   }
 
@@ -394,6 +405,18 @@ export class UI {
     ae.innerHTML = evs.length ? evs.map((e) => `<div class="active-ev" data-x="${e.focus?.x ?? ''}" data-z="${e.focus?.z ?? ''}">${e.def.emoji} ${esc(e.title)}<span class="t">до ${fmtTime(e.end)}</span></div>`).join('') : '<div class="hint">Всё спокойно.</div>';
     ae.querySelectorAll<HTMLElement>('.active-ev').forEach((d) => (d.onclick = () => { if (d.dataset.x) this.hooks.focus(parseFloat(d.dataset.x), parseFloat(d.dataset.z!)); }));
     this.q('#econ').innerHTML = `<span>заработано вчера</span><span>${Math.round(sim.stats.earnedToday)}₽</span><span>потрачено вчера</span><span>${Math.round(sim.stats.spentToday)}₽</span><span>сегодня заработано</span><span>${Math.round(sim.stats.earned)}₽</span><span>опозданий сегодня</span><span>${sim.stats.lateArrivals}</span><span>родилось детей</span><span>${sim.stats.births}</span><span>уехало жителей</span><span>${sim.stats.departures}</span><span>детей до 7 лет</span><span>${sim.citizens.filter((c) => c.alive && c.age < 7).length}</span>`;
+    const ds = sim.dynamics.districts;
+    this.q('#districts').innerHTML = ds.length ? `<table class="dt"><tr><th></th><th>жителей</th><th>работ</th><th>открыто</th><th>😊</th></tr>${ds.map((d) => `<tr><td>${d.trend > 0 ? '📈' : d.trend < 0 ? '📉' : '➖'} ${d.name}</td><td>${d.residents}</td><td>${d.jobs}</td><td>${d.open}${d.vacant ? ` <span class="vac">(${d.vacant} пуст.)</span>` : ''}</td><td>${Math.round(d.mood)}</td></tr>`).join('')}</table>` : '<div class="hint">Данные появятся после первых суток.</div>';
+    const fav = sim.dynamics.favorite >= 0 ? sim.world.buildings[sim.dynamics.favorite] : null;
+    const celebs = sim.social.celebrities.map((id) => sim.citizens[id]).filter((c) => c?.alive);
+    this.q('#culture').innerHTML = `<span>любимое место</span><span>${fav ? this.bLink(fav.id) : '— пока нет'}</span>
+      <span>знаменитости</span><span>${celebs.length ? celebs.map((c) => `⭐ ${this.cLink(c.id)}`).join(', ') : '— пока нет'}</span>
+      <span>традиции</span><span>${sim.dynamics.traditions.length ? sim.dynamics.traditions.map((t) => `🎏 ${t.name} (${['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'][t.weekday]} ${String(t.hour).padStart(2, '0')}:00)`).join('<br>') : 'появятся, когда событие повторится 3 раза'}</span>
+      <span>газета</span><span>${sim.paper.issues.length ? `№${sim.paper.issues[0].no}, день ${sim.paper.issues[0].day + 1}` : 'первый номер в понедельник'}</span>`;
+    this.q('#culture').querySelectorAll<HTMLElement>('[data-cit]').forEach((e) => (e.onclick = () => this.hooks.select({ kind: 'citizen', id: Number(e.dataset.cit) })));
+    this.q('#culture').querySelectorAll<HTMLElement>('[data-bld]').forEach((e) => (e.onclick = () => this.hooks.select({ kind: 'building', id: Number(e.dataset.bld) })));
+    const dot = this.top.querySelector<HTMLElement>('#tb-paper .dot');
+    if (dot) dot.hidden = !sim.paper.unread;
     this.renderNews();
     this.renderInspector();
   }
@@ -469,18 +492,32 @@ export class UI {
       c.household.filter((x) => x !== c.partner && !c.children.includes(x)).length ? `🏠 ${c.household.filter((x) => x !== c.partner && !c.children.includes(x)).map((k) => this.cLink(k)).join(', ')}` : '',
     ].filter(Boolean).join(' · ');
     const transport = [c.hasCar ? `🚗${c.carBroken ? ' (сломана)' : ''}` : '', c.hasBike ? '🚲' : '', c.hasDog ? `🐕 ${c.dogName}${c.dogLost ? ' (потерялся!)' : ''}` : ''].filter(Boolean).join(' ');
+    const social = sim.social;
+    const rep = social.reputation(c);
+    const relIds = Object.entries(c.rel ?? {}).map(([k, v]) => [Number(k), v] as [number, number]).filter(([id]) => sim.citizens[id]?.alive).sort((a, b) => b[1] - a[1]);
+    const shown = [...relIds.slice(0, 6), ...relIds.slice(6).filter(([, v]) => v < -10).slice(0, 2)];
+    const rels = shown.map(([id, v]) => `<div class="rel"><span class="link" data-cit="${id}">${esc(sim.citizens[id].first)} ${esc(sim.citizens[id].last)}</span><i class="rbar"><b style="width:${Math.round((v + 100) / 2)}%;background:${v > 25 ? 'var(--good)' : v < -10 ? 'var(--bad)' : 'var(--accent)'}"></b></i><small>${relWord(v)}${c.partner === id ? ' 💕' : ''}</small></div>`).join('');
+    const mems = (c.memories ?? []).slice(0, 6).map((m) => `<div><span class="tm">${fmtTime(m.t)}</span><span>${m.d > 0 ? '💚' : '💢'} ${esc(sim.citizens[m.who]?.first ?? '')}: ${esc(m.text)}</span></div>`).join('');
+    const favs = Object.entries(c.favs ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([id]) => sim.world.buildings[Number(id)]).filter(Boolean).map((b) => `<span class="chip small link" data-bld="${b.id}">❤️ ${esc(b.name)}</span>`).join('');
+    const prog = c.goal ? sim.goals.progress(c) : 0;
+    const goalHtml = c.goal ? `<div class="goal">🎯 Цель: ${esc(c.goal.text)}<div class="meter"><div style="width:${Math.round(prog * 100)}%;background:var(--accent2)"></div></div></div>` : '';
+    const badges = `${social.celebrities.includes(c.id) ? '<span class="chip small">⭐ знаменитость</span>' : ''}${c.controlled ? '<span class="chip small">🎮 под твоим управлением</span>' : ''}`;
     const avatar = c.age < 7 ? '🧒' : c.age < 18 ? (c.female ? '👧' : '👦') : c.age > 64 ? (c.female ? '👵' : '👴') : c.female ? '👩' : '👨';
     this.inspector.innerHTML = `
       <div class="head"><div class="avatar" style="background:#${c.look.shirt.toString(16).padStart(6, '0')}55">${avatar}</div>
         <div><h3>${esc(displayName(c))}</h3><div class="sub">${age(c.age)} · ${jobName(c)}${c.work >= 0 ? ` · ${this.bLink(c.work)}` : ''}</div></div>
         <button class="close">✕</button></div>
       <div class="now">${now}</div>
-      <div class="chips">${c.traits.map((t) => `<span class="chip small">${t.emoji} ${t.name}</span>`).join('')}${c.sick > 0 ? '<span class="chip small">🤒 болеет</span>' : ''}</div>
+      <div class="chips">${badges}${c.traits.map((t) => `<span class="chip small">${t.emoji} ${t.name}</span>`).join('')}${c.sick > 0 ? '<span class="chip small">🤒 болеет</span>' : ''}</div>
       <div class="kv"><span>настроение</span><span>${Math.round(c.mood)}% ${c.mood > 70 ? '😊' : c.mood > 45 ? '😐' : '😞'}</span><span>деньги</span><span>${Math.round(c.money)}₽</span>
         <span>дом</span><span>${this.bLink(c.home)}</span><span>режим</span><span>подъём ${fmtTime(c.wake * 60)}, отбой ${fmtTime(c.bed * 60)}</span>
         ${transport ? `<span>есть</span><span>${transport}</span>` : ''}${fam ? `<span>семья</span><span>${fam}</span>` : ''}
         ${c.friends.length ? `<span>друзья</span><span>${c.friends.slice(0, 6).map((f) => this.cLink(f)).join(', ')}</span>` : ''}</div>
+      ${goalHtml}
       <div class="stat-title"><span>Потребности</span></div><div class="needs">${needs}</div>
+      <div class="stat-title"><span>Отношения</span><b>репутация ${rep > 0 ? '+' : ''}${Math.round(rep)}</b></div><div class="rels">${rels || '<div class="hint">ни с кем не знаком</div>'}</div>
+      ${mems ? `<div class="stat-title"><span>Помнит</span></div><div class="diary">${mems}</div>` : ''}
+      ${favs ? `<div class="stat-title"><span>Любимые места</span></div><div class="chips">${favs}</div>` : ''}
       <div style="margin-top:10px;display:flex;gap:6px"><button class="btn follow">${this.following ? '⏹ Перестать следить' : '🎥 Следить'}</button><button class="btn play-as">🎮 Играть за ${esc(c.first)}</button></div>
       <div class="stat-title"><span>Дневник</span></div>
       <div class="diary">${c.diary.slice(0, 18).map((d) => `<div><span class="tm">${fmtTime(d.t)}</span><span>${esc(d.text)}</span></div>`).join('') || '<div class="hint">пока пусто</div>'}</div>`;

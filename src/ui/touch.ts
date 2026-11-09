@@ -1,5 +1,11 @@
 // Сенсорное управление жителем: джойстик, обзор, кнопки, HUD, меню занятий.
-import type { Player, ActivityOption } from '../game/player';
+import type { Player, ActivityOption, Special } from '../game/player';
+import type { Citizen } from '../sim/citizen';
+import { opener, respond, DialogChoice } from '../sim/dialog';
+import { aff, relWord } from '../sim/social';
+import { jobName } from '../sim/citizen';
+import { isOpen } from '../sim/world';
+import { ACTIVITY_BY_ID } from '../sim/content/activities';
 import type { Building } from '../sim/world';
 import type { Sim } from '../sim/sim';
 import { NEEDS, NEED_NAMES } from '../sim/content/activities';
@@ -9,6 +15,9 @@ import { displayName } from '../sim/citizen';
 export interface TouchHooks {
   exit: () => void;
   click: () => void;
+  wait: (minutes: number) => void;
+  photo: () => void;
+  openCard: (id: number) => void;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', html = ''): HTMLElementTagNameMap[K] {
@@ -39,6 +48,9 @@ export class TouchControls {
   private hudAt = 0;
   private menuFor: Building | null = null;
   private lastAct = '';
+  private menuBtn!: HTMLButtonElement;
+  private dialogEl!: HTMLElement;
+  dialogOpen = false;
   private lastInside = '';
 
   constructor(private sim: Sim, private player: Player, private hooks: TouchHooks) {
@@ -54,8 +66,24 @@ export class TouchControls {
     const btns = el('div', 'play-btns');
     this.runBtn = el('button', 'pbtn run', '🏃<small>бег</small>');
     this.actBtn = el('button', 'pbtn act', '✋<small>действие</small>');
-    const exit = el('button', 'pbtn exit', '🚪<small>выйти</small>');
+    const exit = el('button', 'pbtn exit', '🎮<small>отпустить</small>');
     btns.append(this.actBtn, this.runBtn, exit);
+    const tools = el('div', 'play-tools');
+    const waitBtn = el('button', 'tbtn', '⏳');
+    const photoBtn = el('button', 'tbtn', '📷');
+    const menuBtn = el('button', 'tbtn', '📋');
+    const cardBtn = el('button', 'tbtn', '📖');
+    waitBtn.title = 'Подождать'; photoBtn.title = 'Снимок'; menuBtn.title = 'Все занятия здесь'; cardBtn.title = 'Моя история';
+    tools.append(waitBtn, photoBtn, menuBtn, cardBtn);
+    this.menuBtn = menuBtn;
+    for (const b of [waitBtn, photoBtn, menuBtn, cardBtn]) b.addEventListener('pointerdown', (e) => e.stopPropagation());
+    waitBtn.onclick = () => { this.hooks.click(); this.openWait(); };
+    photoBtn.onclick = () => this.hooks.photo();
+    menuBtn.onclick = () => { this.hooks.click(); const b = this.player.room?.building; if (b) this.openMenu(b); };
+    cardBtn.onclick = () => { this.hooks.click(); if (this.player.c) this.hooks.openCard(this.player.c.id); };
+    this.dialogEl = el('div', 'dialog');
+    this.dialogEl.hidden = true;
+    this.root.append(tools, this.dialogEl);
     this.inside = el('div', 'inside-bar');
     this.inside.hidden = true;
     this.menu = el('div', 'act-menu');
@@ -155,24 +183,134 @@ export class TouchControls {
     if (b) this.openMenu(b);
   }
 
-  openMenu(b: Building) {
-    const opts = this.player.options(b);
+  openMenu(b: Building, list?: Special[], title?: string) {
+    const p = this.player;
+    const c = p.c!;
+    let opts = list ? [] : p.options(b);
+    const sp = p.pendingSpot;
+    if (!list && sp) opts = opts.filter((o) => sp.acts.includes(o.act.id));
+    const specials = list ?? (sp ? [] : p.specials(b));
     this.menuFor = b;
     this.menu.hidden = false;
-    const c = this.player.c!;
-    const head = b.id === c.home ? '🏠 Дома' : b.id === c.work ? `💼 ${esc(b.name)} — твоя работа` : esc(b.name);
+    const head = title ?? (b.id === c.home ? '🏠 Дома' : b.id === c.work ? `💼 ${esc(b.name)} — твоя работа` : esc(b.name));
+    const actItems = opts.map((o, i) => `<button class="am-item${o.disabled ? ' off' : ''}" data-i="${i}"><span class="em">${o.act.emoji}</span><span class="tx">${esc(o.act.label)}<small>${o.disabled ? esc(o.disabled) : `~${o.dur >= 90 ? `${Math.round(o.dur / 60 * 10) / 10} ч` : `${o.dur} мин`}${o.price ? ` · ${o.price}₽` : ''}`}</small></span></button>`).join('');
+    const spItems = specials.map((s, i) => `<button class="am-item special${s.disabled ? ' off' : ''}" data-s="${i}"><span class="em">${s.emoji}</span><span class="tx">${esc(s.label)}<small>${esc(s.disabled ?? s.sub)}</small></span></button>`).join('');
     this.menu.innerHTML = `<div class="am-head"><b>${head}</b><span>💰 ${Math.round(c.money)}₽</span><button class="am-close">✕</button></div>
-      <div class="am-list">${opts.length ? opts.map((o, i) => `<button class="am-item${o.disabled ? ' off' : ''}" data-i="${i}"><span class="em">${o.act.emoji}</span><span class="tx">${esc(o.act.label)}<small>${o.disabled ? esc(o.disabled) : `~${o.dur >= 90 ? `${Math.round(o.dur / 60 * 10) / 10} ч` : `${o.dur} мин`}${o.price ? ` · ${o.price}₽` : ''}`}</small></span></button>`).join('') : '<div class="hint">Здесь сейчас нечем заняться.</div>'}</div>`;
+      <div class="am-list">${actItems}${spItems}${!actItems && !spItems ? '<div class="hint">Здесь сейчас нечем заняться.</div>' : ''}</div>`;
     this.menu.querySelector<HTMLElement>('.am-close')!.onclick = () => { this.hooks.click(); this.closeMenu(); };
-    this.menu.querySelectorAll<HTMLElement>('.am-item').forEach((it) => {
+    this.menu.querySelectorAll<HTMLElement>('[data-i]').forEach((it) => {
       it.onclick = () => {
         const o: ActivityOption = opts[Number(it.dataset.i)];
         if (o.disabled) return;
         this.hooks.click();
-        this.player.start(b, o);
+        if (p.room) p.startAtSpot(sp ?? null, o);
+        else p.start(b, o);
         this.closeMenu();
       };
     });
+    this.menu.querySelectorAll<HTMLElement>('[data-s]').forEach((it) => {
+      it.onclick = () => {
+        const s = specials[Number(it.dataset.s)];
+        if (s.disabled) return;
+        this.hooks.click();
+        if (s.submenu) { this.openMenu(b, s.submenu(), s.label); return; }
+        s.run();
+        this.closeMenu();
+      };
+    });
+  }
+
+  openWait() {
+    const sim = this.sim;
+    this.menu.hidden = false;
+    const h = sim.clock.hour;
+    const untilMorning = Math.round(((((7 - h) % 24) + 24) % 24) * 60);
+    const items: [string, number][] = [['30 минут', 30], ['1 час', 60], ['3 часа', 180], [`до утра (07:00)`, untilMorning]];
+    this.menu.innerHTML = `<div class="am-head"><b>⏳ Подождать</b><span>${fmtTime(sim.clock.total)}</span><button class="am-close">✕</button></div>
+      <div class="am-list">${items.map(([l, m], i) => `<button class="am-item" data-w="${i}"><span class="em">⏩</span><span class="tx">${l}<small>время пролетит, город продолжит жить</small></span></button>`).join('')}</div>`;
+    this.menu.querySelector<HTMLElement>('.am-close')!.onclick = () => this.closeMenu();
+    this.menu.querySelectorAll<HTMLElement>('[data-w]').forEach((it) => (it.onclick = () => { this.hooks.click(); this.hooks.wait(items[Number(it.dataset.w)][1]); this.closeMenu(); }));
+  }
+
+  // ——— диалог
+  openDialog(npc: Citizen) {
+    const p = this.player;
+    const me = p.c!;
+    const sim = this.sim;
+    this.dialogOpen = true;
+    this.dialogEl.hidden = false;
+    const used = new Set<DialogChoice>();
+    let talked = 0;
+    const render = (line: string) => {
+      const a = aff(npc, me);
+      const known = npc.rel?.[me.id] !== undefined;
+      const adult = npc.age >= 18 && me.age >= 18;
+      const choices: [DialogChoice, string][] = [
+        ['howareyou', '🙂 Как дела?'], ['news', '📰 Что нового?'], ['compliment', '🌸 Комплимент'], ['treat', '☕ Угостить (10₽)'],
+        ['invite_walk', '🌳 Позвать гулять'], ['invite_cafe', '🍰 Позвать в кафе'],
+      ];
+      if (adult) choices.push(['invite_bar', '🍺 Позвать в бар']);
+      if (a >= 30) choices.push(['introduce', '🤝 Познакомь с друзьями']);
+      if (adult && a >= 40 && npc.partner !== me.id && npc.female !== me.female) choices.push(['date', '💘 Предложить встречаться']);
+      choices.push(['rude', '😠 Нагрубить'], ['bye', '👋 Пока']);
+      const barW = Math.round((a + 100) / 2);
+      this.dialogEl.innerHTML = `<div class="dl-head"><span class="dl-av">${npc.age < 7 ? '🧒' : npc.age < 18 ? (npc.female ? '👧' : '👦') : npc.age > 64 ? (npc.female ? '👵' : '👴') : npc.female ? '👩' : '👨'}</span>
+        <div class="dl-who"><b class="dl-name">${esc(npc.first)} ${esc(npc.last)}</b><small>${npc.age} · ${esc(jobName(npc))}${npc.act ? ` · ${npc.act.emoji} ${esc(npc.act.label)}` : ''}</small>
+        <div class="dl-rel"><i style="width:${barW}%;background:${a > 25 ? 'var(--good)' : a < -10 ? 'var(--bad)' : 'var(--accent)'}"></i><span>${known ? `${relWord(a)} · ${Math.round(a)}` : 'не знакомы'}</span></div></div>
+        <button class="am-close dl-x">✕</button></div>
+        <div class="dl-line">«${esc(line)}»</div>
+        <div class="dl-choices">${choices.map(([k, l]) => `<button class="dl-c${used.has(k) && k !== 'bye' ? ' used' : ''}" data-c="${k}">${l}</button>`).join('')}</div>`;
+      this.dialogEl.querySelector<HTMLElement>('.dl-x')!.onclick = () => this.closeDialog();
+      this.dialogEl.querySelector<HTMLElement>('.dl-name')!.onclick = () => this.hooks.openCard(npc.id);
+      this.dialogEl.querySelectorAll<HTMLElement>('[data-c]').forEach((btn) => {
+        btn.onclick = () => {
+          const k = btn.dataset.c as DialogChoice;
+          this.hooks.click();
+          if (k === 'bye') { const r = respond(sim, npc, me, k); render(r.text); setTimeout(() => this.closeDialog(), 900); return; }
+          const r = respond(sim, npc, me, k);
+          const repeat = used.has(k);
+          used.add(k);
+          const delta = repeat ? Math.min(0, r.delta) : r.delta;
+          const mem: Record<string, string> = { howareyou: 'поболтали', news: 'обсудили новости', compliment: 'сделал(а) комплимент', treat: 'угостил(а)', invite_walk: 'позвал(а) гулять', invite_cafe: 'позвал(а) в кафе', invite_bar: 'позвал(а) в бар', introduce: 'познакомились ближе', rude: 'нагрубил(а)', date: 'предложил(а) встречаться', help: 'помог(ла)' };
+          sim.social.add(npc, me, delta, `${me.first}: ${mem[k] ?? 'разговор'}`);
+          sim.social.add(me, npc, delta * 0.6, undefined);
+          if (talked < 3 && k !== 'rude') { me.needs.social = Math.min(100, me.needs.social + 8); npc.needs.social = Math.min(100, npc.needs.social + 6); talked++; }
+          npc.pausedUntil = sim.clock.total + 2;
+          if (k === 'treat' && r.ok) { me.money -= 10; npc.needs.hunger = Math.min(100, npc.needs.hunger + 15); npc.needs.fun = Math.min(100, npc.needs.fun + 5); }
+          if (k === 'rude') { npc.mood = Math.max(0, npc.mood - 12); sim.brain.log(npc, `${me.first} нагрубил${me.female ? 'а' : ''} — неприятно`); }
+          if ((k === 'invite_walk' || k === 'invite_cafe' || k === 'invite_bar') && r.ok) this.invite(npc, k);
+          if (k === 'date' && r.ok) {
+            if (me.partner >= 0) { const old = sim.citizens[me.partner]; if (old) old.partner = -1; }
+            me.partner = npc.id; npc.partner = me.id;
+            sim.brain.log(me, `теперь мы пара: ${npc.first} 💕`);
+            sim.brain.log(npc, `теперь мы пара: ${me.first} 💕`);
+            sim.news.push('💕', `${me.first} ${me.last} и ${npc.first} ${npc.last} теперь пара`, 'people', { citizen: me.id });
+            p.hooks_heart(npc);
+          }
+          render(r.text);
+        };
+      });
+    };
+    render(opener(sim, npc, me));
+  }
+
+  private invite(npc: Citizen, k: DialogChoice) {
+    const sim = this.sim;
+    const p = this.player;
+    const me = p.c!;
+    const types = k === 'invite_walk' ? ['park', 'square', 'pond'] : k === 'invite_cafe' ? ['cafe', 'coffee', 'pizzeria', 'bakery'] : ['bar'];
+    const act = ACTIVITY_BY_ID[k === 'invite_walk' ? 'park_walk' : k === 'invite_cafe' ? 'coffee_sit' : 'bar'];
+    const h = sim.clock.hour, wd = sim.clock.weekday;
+    const b = sim.world.nearestBuilding(types, { x: me.x, z: me.z }, (x) => isOpen(x, h, wd) && !x.closedReason);
+    if (!b) { this.toast('Рядом всё закрыто — давай в другой раз'); return; }
+    sim.force(npc, act, b, 120);
+    p.meeting = { npc: npc.id, b: b.id, until: sim.clock.total + 150 };
+    this.toast(`Договорились: ${npc.first} ждёт тебя — ${b.name}`);
+  }
+
+  closeDialog() {
+    this.dialogOpen = false;
+    this.dialogEl.hidden = true;
   }
 
   closeMenu() {
@@ -192,6 +330,7 @@ export class TouchControls {
     const p = this.player;
     const c = p.c;
     if (!c) return;
+    this.menuBtn.hidden = !p.room;
     // кнопка действия
     const label = p.target?.label;
     const busy = !!c.act;

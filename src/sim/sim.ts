@@ -9,6 +9,11 @@ import { Transport, Vehicle, BusStop } from './transport';
 import { WeatherSystem } from './weather';
 import { Stats } from './stats';
 import { EventManager } from './events';
+import { Social } from './social';
+import { Goals } from './goals';
+import { Dynamics } from './dynamics';
+import { Newspaper } from './newspaper';
+import { JOBS, JobDef } from './content/jobs';
 import { ACTIVITY_BY_ID, ActivityDef, gender } from './content/activities';
 import { SPECIAL_JOBS } from './content/jobs';
 import type { WeatherDef } from './content/weather';
@@ -16,7 +21,7 @@ import { SEASON_NAMES, Season } from './content/weather';
 
 export type FxKind =
   | 'fire' | 'smoke' | 'flood' | 'cones' | 'tent' | 'circus' | 'stage' | 'fireworks' | 'pigeons' | 'crash'
-  | 'stalls' | 'balloons' | 'meteors' | 'lostdog' | 'rave' | 'ballot' | 'confetti' | 'crowd' | 'garlands' | 'icecream';
+  | 'stalls' | 'balloons' | 'meteors' | 'lostdog' | 'rave' | 'ballot' | 'confetti' | 'crowd' | 'garlands' | 'icecream' | 'forrent';
 
 export interface Fx {
   id: number;
@@ -55,6 +60,10 @@ export class Sim {
   news: News;
   stats: Stats;
   events: EventManager;
+  social: Social;
+  goals: Goals;
+  dynamics: Dynamics;
+  paper: Newspaper;
   eventSpots: EventSpot[] = [];
   fx: Fx[] = [];
   snowmen: Snowman[] = [];
@@ -78,6 +87,10 @@ export class Sim {
     this.brain = new Brain(this);
     this.stats = new Stats(this);
     this.events = new EventManager(this);
+    this.social = new Social(this);
+    this.goals = new Goals(this);
+    this.dynamics = new Dynamics(this);
+    this.paper = new Newspaper(this);
     this.weather.set(this.params.weather);
     this.regenerate();
     this.news.push('🏙️', 'Добро пожаловать в город! Понедельник, утро — город просыпается и спешит на работу.', 'city');
@@ -105,6 +118,8 @@ export class Sim {
       }
       this.brain.decide(c);
     }
+    this.social.init();
+    this.paper.resetWeek();
     this.version++;
   }
 
@@ -151,7 +166,7 @@ export class Sim {
   }
 
   /** колбэк: у управляемого жителя закончилось занятие */
-  onPlayerActivityEnd?: (c: Citizen) => void;
+  onPlayerActivityEnd?: (c: Citizen) => boolean | void;
   /** житель вошёл в здание (для звуков) */
   onEnter?: (b: Building, c: Citizen) => void;
 
@@ -176,8 +191,7 @@ export class Sim {
     if (c.controlled) {
       if (c.act && now >= c.actEnd) {
         brain.endActivity(c);
-        this.emerge(c);
-        this.onPlayerActivityEnd?.(c);
+        if (!this.onPlayerActivityEnd?.(c)) this.emerge(c);
       }
       return;
     }
@@ -453,7 +467,15 @@ export class Sim {
   }
 
   // ——— периодические дела
+  /** профессия для работы в здании такого типа */
+  jobFor(type: string): JobDef {
+    const cand = JOBS.filter((j) => j.places.includes(type));
+    return this.rng.weighted(cand, (j) => j.weight + 0.1) ?? JOBS.find((j) => j.id === 'seller')!;
+  }
+
   hourly(h: number) {
+    this.social.hourly();
+    this.dynamics.hourly();
     // погода и шанс заболеть
     const sickBase = 0.0012 * this.params.sickness * this.mods.sickMul * (this.params.season === 'winter' || this.params.season === 'autumn' ? 1.6 : 1) * (this.weather.temp < -10 ? 1.5 : 1);
     for (const c of this.citizens) {
@@ -477,14 +499,9 @@ export class Sim {
     if (h === 7 || h === 11 || h === 15) this.events.deliveries();
     if (this.weather.snowCover > 0.35 && h % 3 === 0) this.events.serviceRound('plow');
     // стройка растёт
-    for (const b of this.world.byType.get('construction') ?? []) {
-      if (b.inside.size > 2 && h > 8 && h < 18) {
-        b.growth = Math.min(1, b.growth + 0.004 * b.inside.size);
-        if (b.growth >= 1 && b.closedReason !== 'done') {
-          b.closedReason = 'done';
-          this.news.push('🏗️', `Стройка завершена! Новый дом готов к заселению`, 'city', { focus: { x: b.x, z: b.z } });
-        }
-      }
+    for (const b of [...(this.world.byType.get('construction') ?? [])]) {
+      if (b.inside.size > 0 && h >= 7 && h < 19) b.growth = Math.min(1, b.growth + 0.006 * Math.min(6, b.inside.size) * (b.fast ? 3 : 1));
+      if (b.growth >= 1) this.dynamics.completeConstruction(b);
     }
   }
 
@@ -514,6 +531,10 @@ export class Sim {
       this.news.push('🍂', `Наступает ${SEASON_NAMES[this.params.season]}`, 'weather');
     }
     this.events.daily();
+    this.social.daily();
+    this.goals.daily();
+    this.dynamics.daily();
+    this.paper.daily();
     // естественная рождаемость: шанс на пару в день
     const yd = Math.max(3, this.params.yearDays);
     for (const m of this.citizens) {
@@ -667,6 +688,8 @@ export class Sim {
     const c = makeCitizen(this.rng, age, female, last, home, this.world);
     // id совпадает с индексом
     c.id = this.citizens.length;
+    c.rel = {};
+    c.memories = [];
     this.citizens.push(c);
     this.world.buildings[home].residents.push(c.id);
     return c;

@@ -84,6 +84,7 @@ export interface BusStop {
   name: string;
   waiting: number[];
   order: number; // расстояние вдоль маршрута
+  added?: boolean;
 }
 
 export interface BusRoute {
@@ -257,6 +258,29 @@ export class Transport {
       if (st.seg > si || (st.seg === si && st.s > s)) return k;
     }
     return 0;
+  }
+
+  /** добавить остановку на ребре маршрута (редактор); null — ребро не на маршруте */
+  addStop(edgeId: number, tCanon: number): BusStop | null {
+    const w = this.world;
+    const e = w.edges[edgeId];
+    for (const route of this.routes) {
+      const si = route.segs.findIndex((s) => s.edge === edgeId);
+      if (si < 0) continue;
+      const seg = route.segs[si];
+      const dir = seg.key % 2 === 0 ? 1 : -1;
+      const along = dir > 0 ? tCanon - seg.base : e.len - tCanon - seg.base;
+      const sl = Math.max(2, Math.min(seg.len - 2, along));
+      if (route.stops.some((st) => st.seg === si && Math.abs(st.s - sl) < 8)) return null;
+      const t = dir > 0 ? seg.base + sl : e.len - (seg.base + sl);
+      const stop: BusStop = { id: this.stops.length, routeId: route.id, seg: si, s: sl, place: { edge: e.id, t, side: dir, pos: w.pointOn(e.id, t, dir * 8.6) }, name: `ост. «${e.street}»`, waiting: [], order: route.cum[si] + sl, added: true };
+      this.stops.push(stop);
+      route.stops.push(stop);
+      route.stops.sort((a, b) => a.order - b.order);
+      for (const v of this.busesOnRoute(route.id)) v.nextStop = this.firstStopAhead(route, v.si, v.s);
+      return stop;
+    }
+    return null;
   }
 
   remove(v: Vehicle) {

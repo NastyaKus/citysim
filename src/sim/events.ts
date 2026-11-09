@@ -101,6 +101,10 @@ export class EventManager {
     const now = this.sim.clock.total;
     const ev: ActiveEvent = { id: this.id++, def, start: now, end: now + this.rng.range(def.dur[0], def.dur[1]), title: def.name, data: {} };
     const ok = def.start(this.sim, ev, this);
+    if (ok) {
+      this.sim.paper?.noteEvent(def.id);
+      this.sim.dynamics?.noteEvent(def.id, def.name);
+    }
     if (!ok) {
       if (manual) this.sim.news.push('🤷', `Не получилось: «${def.name}» — сейчас нет подходящих условий`, 'event');
       return false;
@@ -878,7 +882,7 @@ export const EVENTS: EventDef[] = [
           c.hasBike = m.rng.chance(s.params.bikeOwnership);
           s.brain.log(c, F(c, 'переехал в город! распаковывает коробки', 'переехала в город! распаковывает коробки'));
           // знакомится с соседями
-          for (const nid of home.residents.slice(0, 3)) { const n = s.citizens[nid]; if (n && n.id !== c.id) { c.friends.push(n.id); n.friends.push(c.id); } }
+          for (const nid of home.residents.slice(0, 3)) { const n = s.citizens[nid]; if (n && n.id !== c.id) s.social.add(c, n, 18, 'новые соседи', 1); }
           s.brain.beginActivity(c, ACTIVITY_BY_ID.cleaning, home.id, 120);
           s.news.push('📦', `В город переехал${female ? 'а' : ''} ${displayName(c)} — ${c.female && c.job.nameF ? c.job.nameF : c.job.name}, ${home.name}`, 'people', { citizen: c.id });
         },
@@ -906,6 +910,7 @@ export const EVENTS: EventDef[] = [
         if (!b) continue;
         a.partner = b.id; b.partner = a.id;
         const place = s.world.buildings[a.at];
+        s.social.add(a, b, 60, `влюбились — ${place.name}`, 1);
         s.brain.log(a, `познакомил${a.female ? 'ась' : 'ся'} с ${b.first} — ${place.name}. кажется, это любовь`);
         s.brain.log(b, `познакомил${b.female ? 'ась' : 'ся'} с ${a.first} — ${place.name}. кажется, это любовь`);
         a.mood = b.mood = 95;

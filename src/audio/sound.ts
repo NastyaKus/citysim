@@ -1,7 +1,7 @@
 // Процедурный звук на Web Audio: окружение, погода, город, игрок. Без аудиофайлов.
 import type { Sim } from '../sim/sim';
 
-export type SfxKind = 'door' | 'talk' | 'bark' | 'beep' | 'step' | 'click' | 'chime' | 'heart';
+export type SfxKind = 'door' | 'talk' | 'bark' | 'beep' | 'step' | 'click' | 'chime' | 'heart' | 'shutter' | 'build';
 
 interface Loop { gain: GainNode; target: number }
 
@@ -28,6 +28,8 @@ export class Sound {
   private beatAt = 0;
   private listener: Listener = { x: 0, z: 0, rx: 1, rz: 0, height: 100 };
   private t = 0;
+  /** игрок внутри здания — улицу почти не слышно */
+  indoor = false;
   private scanAt = 0;
   private scan = { traffic: 0, trafficPan: 0, idle: 0, peds: 0, pedPan: 0, kids: 0, kidsPan: 0, build: 0, buildPan: 0, cafe: 0, cafePan: 0, bar: 0, barPan: 0, dogs: 0, dogPan: 0, square: 0, squarePan: 0, park: 0, parkPan: 0, pond: 0, pondPan: 0, tick: 0, tickPan: 0, music: 0, musicPan: 0 };
   private whooshed = new Map<number, number>();
@@ -425,6 +427,14 @@ export class Sound {
       case 'click':
         this.tone(1900, 'sine', 0.035, 0.04);
         break;
+      case 'shutter':
+        this.burst(0.05, 'highpass', 3000, 0.25, 0, 0, 0.7);
+        this.burst(0.08, 'bandpass', 1400, 0.2, 0, 0.07, 2);
+        break;
+      case 'build':
+        for (let i = 0; i < 3; i++) this.burst(0.07, 'bandpass', 700, 0.3, 0, i * 0.18, 2.5);
+        this.tone(880, 'sine', 0.3, 0.06, 0, undefined, 0.6);
+        break;
       case 'chime':
         this.tone(660, 'sine', 0.4, 0.07);
         this.tone(880, 'sine', 0.6, 0.06, 0, undefined, 0.12);
@@ -496,7 +506,7 @@ export class Sound {
     const paused = sim.params.paused;
     const hk = 1 / (1 + Math.max(0, L.height - 30) / 120);
     const season = sim.params.season;
-    const quiet = paused ? 0.35 : 1;
+    const quiet = (paused ? 0.35 : 1) * (this.indoor ? 0.22 : 1);
     const congestion = sim.stats.current.congestion;
     const cars = sim.stats.current.cars;
     // город

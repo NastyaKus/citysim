@@ -40,6 +40,7 @@ export interface Edge {
   closed: string | null; // причина перекрытия
   street: string;
   traffic: number; // сглаженная загруженность 0..1
+  pedestrian?: boolean;
 }
 
 export interface Place {
@@ -79,7 +80,16 @@ export interface Building {
   priceMul: number;
   litWindows: number; // 0..1 — доля горящих окон (считается симуляцией)
   growth: number; // для стройки
+  visits: number;
+  visitHist: number[];
+  vacantSince: number; // -1 — работает
+  futureType?: string; // во что превратится стройка
+  fast?: boolean;
+  decorBonus: number;
 }
+
+export type DecorKind = 'bench' | 'tree' | 'flowers' | 'lamp';
+export interface Decor { id: number; kind: DecorKind; x: number; z: number; ry: number; nook?: number }
 
 export interface Route {
   nodes: number[];
@@ -99,6 +109,9 @@ export class World {
   nodes: RoadNode[] = [];
   edges: Edge[] = [];
   buildings: Building[] = [];
+  decor: Decor[] = [];
+  private decorId = 1;
+  version = 0; // растёт при изменении застройки
   byType = new Map<string, Building[]>();
   edgeAt = new Map<string, number>();
   private distCar = new Float64Array(0);
@@ -258,6 +271,7 @@ export class World {
       residents: [], workers: [], homeCapacity: def.residentsPerFloor ? Math.max(1, Math.round(def.residentsPerFloor * Math.max(1, floors) * 1.2)) : 0,
       inside: new Set(), closedReason: null, onFire: 0, powerOut: false, attraction: 1, priceMul: 1, litWindows: 0,
       growth: def.id === 'construction' ? 0.15 : 1,
+      visits: 0, visitHist: [], vacantSince: -1, decorBonus: 0,
     };
     this.buildings.push(b);
     if (!this.byType.has(def.id)) this.byType.set(def.id, []);
@@ -364,6 +378,96 @@ export class World {
     }
     pts.push({ ...to.pos });
     return pts;
+  }
+
+  /** сменить тип здания на участке */
+  changeType(b: Building, def: BuildingDef, name?: string) {
+    const list = this.byType.get(b.type);
+    if (list) this.byType.set(b.type, list.filter((x) => x !== b));
+    b.def = def;
+    b.type = def.id;
+    const rng = this.rng;
+    b.floors = def.floors[1] === 0 ? 0 : rng.int(def.floors[0], def.floors[1]);
+    b.height = b.floors * FLOOR_H;
+    b.homeCapacity = def.residentsPerFloor ? Math.max(1, Math.round(def.residentsPerFloor * Math.max(1, b.floors) * 1.2)) : 0;
+    b.closedReason = null;
+    b.vacantSince = -1;
+    b.attraction = 1;
+    b.priceMul = 1;
+    b.growth = def.id === 'construction' ? 0.1 : 1;
+    b.visitHist = [];
+    b.seed = rng.int(0, 1e9);
+    b.name = name ?? (['shop', 'food', 'leisure'].includes(def.cat) || ['gym', 'pharmacy', 'bakery', 'autoservice'].includes(def.id) ? `${def.prefix} ${rng.pick(SHOP_NAMES)}` : def.cat === 'home' ? `${def.prefix}, ${this.edges[b.entrance.edge].street.split(' ')[0]} ${b.id % 90 + 3}` : def.name);
+    if (!this.byType.has(def.id)) this.byType.set(def.id, []);
+    this.byType.get(def.id)!.push(b);
+    this.version++;
+  }
+
+  /** найти ближайшее ребро и место у дороги для точки */
+  placeNear(x: number, z: number): Place {
+    let best = this.edges[0], bd = Infinity, bt = 0;
+    for (const e of this.edges) {
+      const A = this.nodes[e.a];
+      const t = Math.max(STOP_OFF + 1, Math.min(e.len - STOP_OFF - 1, (x - A.x) * e.ux + (z - A.z) * e.uz));
+      const px = A.x + e.ux * t, pz = A.z + e.uz * t;
+      const d = Math.hypot(px - x, pz - z);
+      if (d < bd) { bd = d; best = e; bt = t; }
+    }
+    const A = this.nodes[best.a];
+    const px = A.x + best.ux * bt, pz = A.z + best.uz * bt;
+    const side = Math.sign((x - px) * best.nx + (z - pz) * best.nz) || 1;
+    return { edge: best.id, t: bt, side, pos: { x: px + best.nx * side * PED_OFF, z: pz + best.nz * side * PED_OFF } };
+  }
+
+  /** расстояние от точки до оси ближайшей дороги */
+  roadDist(x: number, z: number): number {
+    let bd = Infinity;
+    for (const e of this.edges) {
+      const A = this.nodes[e.a];
+      const t = Math.max(0, Math.min(e.len, (x - A.x) * e.ux + (z - A.z) * e.uz));
+      bd = Math.min(bd, Math.hypot(A.x + e.ux * t - x, A.z + e.uz * t - z));
+    }
+    return bd;
+  }
+
+  addDecor(kind: DecorKind, x: number, z: number, ry = 0): Decor {
+    const d: Decor = { id: this.decorId++, kind, x, z, ry };
+    if (kind === 'bench') {
+      // лавочка — маленькое место отдыха, которым пользуются жители
+      const def = BUILDING_BY_ID.nook;
+      const entrance = this.placeNear(x, z);
+      entrance.pos = { x, z };
+      const bi = Math.max(0, Math.min(BLOCKS - 1, Math.floor((x + HALF_CITY) / PITCH)));
+      const bj = Math.max(0, Math.min(BLOCKS - 1, Math.floor((z + HALF_CITY) / PITCH)));
+      const b: Building = {
+        id: this.buildings.length, def, type: 'nook', name: `Лавочка · ${this.edges[entrance.edge].street}`,
+        x, z, w: 5, d: 5, faceX: 0, faceZ: 1, floors: 0, height: 0, entrance, block: [bi, bj], zone: 'mid',
+        district: (bi >= 3.5 ? 1 : 0) + (bj >= 3.5 ? 2 : 0), seed: 1, residents: [], workers: [], homeCapacity: 0, inside: new Set(),
+        closedReason: null, onFire: 0, powerOut: false, attraction: 1.2, priceMul: 1, litWindows: 0, growth: 1, visits: 0, visitHist: [], vacantSince: -1, decorBonus: 0,
+      };
+      this.buildings.push(b);
+      if (!this.byType.has('nook')) this.byType.set('nook', []);
+      this.byType.get('nook')!.push(b);
+      d.nook = b.id;
+    }
+    // декор радует соседей
+    for (const b of this.buildings) if (Math.hypot(b.x - x, b.z - z) < 30) b.decorBonus = Math.min(8, b.decorBonus + (kind === 'tree' || kind === 'flowers' ? 1 : 0.5));
+    this.decor.push(d);
+    this.version++;
+    return d;
+  }
+
+  removeDecor(id: number) {
+    const d = this.decor.find((x) => x.id === id);
+    if (!d) return;
+    this.decor = this.decor.filter((x) => x !== d);
+    if (d.nook !== undefined) {
+      const b = this.buildings[d.nook];
+      b.closedReason = 'убрана';
+      const list = this.byType.get('nook');
+      if (list) this.byType.set('nook', list.filter((x) => x !== b));
+    }
+    this.version++;
   }
 
   randomPointIn(b: Building, rng: RNG, margin = 2): V2 {

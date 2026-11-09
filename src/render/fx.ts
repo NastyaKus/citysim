@@ -172,6 +172,24 @@ export class FxRenderer {
         for (let i = 0; i < 4; i++) g.cone(0.3, 0.8, 6, 0xff6b00, -3 + i * 2, 0, -3.2);
         break;
       }
+      case 'forrent': {
+        const b = this.sim.world.buildings[f.building ?? 0];
+        const c = document.createElement('canvas');
+        c.width = 256; c.height = 96;
+        const g2 = c.getContext('2d')!;
+        g2.fillStyle = '#ffd60a'; g2.fillRect(0, 0, 256, 96);
+        g2.fillStyle = '#1b1b1b'; g2.font = 'bold 44px system-ui, sans-serif'; g2.textAlign = 'center'; g2.textBaseline = 'middle';
+        g2.fillText('СДАЁТСЯ', 128, 50);
+        const tex = new THREE.CanvasTexture(c);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const sign = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 1.2), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }));
+        const grp = new THREE.Group();
+        const ex = b.entrance.pos.x - f.x, ez = b.entrance.pos.z - f.z;
+        sign.position.set(ex * 0.7, 3.4, ez * 0.7);
+        sign.lookAt(ex * 2, 3.4, ez * 2);
+        grp.add(sign);
+        return grp;
+      }
       case 'ballot': {
         g.box(1.2, 1, 1.2, 0x1d3557, 0, 0, 0);
         g.box(1.3, 0.1, 1.3, 0xffffff, 0, 1, 0);

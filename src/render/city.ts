@@ -4,10 +4,11 @@ import { GB, lowpolyMaterial, shadeColor } from './lowpoly';
 import { BuildCtx, WinSpec, TreeSpec, LampSpec, DynSpec } from './buildCtx';
 import { STYLES } from './styles';
 import { P } from './palette';
+import type { Building } from '../sim/world';
 import { World, PITCH, ROAD_HALF, LOT_EDGE, STOP_OFF, BLOCKS, HALF_CITY } from '../sim/world';
 import type { Transport } from '../sim/transport';
 import { RNG } from '../sim/rng';
-import { Collision } from '../game/collision';
+import { Collision, Box } from '../game/collision';
 
 export interface CityMeshes {
   group: THREE.Group;
@@ -27,6 +28,8 @@ export interface CityMeshes {
   lightHeads: { node: number; axis: 'x' | 'z'; pos: THREE.Vector3 }[];
   stops: { x: number; z: number; ry: number; color: number }[];
   collision: Collision;
+  rebuildBuilding: (b: Building) => void;
+  onRebuild?: () => void;
 }
 
 const WIN_GEO = new THREE.BoxGeometry(1, 1.3, 0.14);
@@ -159,44 +162,82 @@ export function buildCity(world: World, transport: Transport): CityMeshes {
     }
   }
 
-  // ——— здания
-  for (const b of world.buildings) {
-    const style = STYLES[b.type];
-    if (!style) continue;
-    const ctx = new BuildCtx(b, new RNG(b.seed));
-    style(ctx);
-    const ry = Math.atan2(b.faceX, b.faceZ);
-    const cos = Math.cos(ry), sin = Math.sin(ry);
-    const tx = (x: number, z: number) => ({ x: b.x + x * cos + z * sin, z: b.z - x * sin + z * cos });
-    // стены для коллизий игрока: высокие части, стоящие на земле
-    for (const part of ctx.gb.parts) {
-      part.computeBoundingBox();
-      const bb = part.boundingBox!;
-      if (bb.max.y - bb.min.y < 1.4 || bb.min.y > 1.0) continue;
-      if ((bb.max.x - bb.min.x) * (bb.max.z - bb.min.z) < 0.05) continue;
-      const corners = [tx(bb.min.x, bb.min.z), tx(bb.max.x, bb.max.z), tx(bb.min.x, bb.max.z), tx(bb.max.x, bb.min.z)];
-      collision.addBox({
-        x0: Math.min(...corners.map((c) => c.x)), x1: Math.max(...corners.map((c) => c.x)),
-        z0: Math.min(...corners.map((c) => c.z)), z1: Math.max(...corners.map((c) => c.z)), h: bb.max.y,
-      });
+  // ——— здания: по кварталам, чтобы можно было перестраивать
+  const mat = lowpolyMaterial();
+  const roadMat = lowpolyMaterial({ roughness: 0.85, metalness: 0.05 });
+  const grassMat = lowpolyMaterial({ color: P.grass });
+  const neonMat = new THREE.MeshBasicMaterial({ vertexColors: true });
+  const snowMat = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0, flatShading: true, depthWrite: false });
+  const waterMat = new THREE.MeshStandardMaterial({ color: P.water, roughness: 0.15, metalness: 0.2, transparent: true, opacity: 0.88, flatShading: true });
+  interface Cache { wins: WinSpec[]; trees: TreeSpec[]; lamps: LampSpec[]; dyn: DynSpec[]; boxes: Box[]; pick: THREE.Mesh | null }
+  const caches = new Map<number, Cache>();
+  const blockGroups = new Map<string, THREE.Group>();
+  const baseTrees = trees.slice();
+  const baseLamps = lamps.slice();
+
+  const buildBlock = (key: string) => {
+    const old = blockGroups.get(key);
+    if (old) {
+      group.remove(old);
+      old.traverse((o) => { if ((o as THREE.Mesh).geometry) (o as THREE.Mesh).geometry.dispose(); });
     }
-    main.merge(ctx.gb, b.x, 0, b.z, ry);
-    grass.merge(ctx.grass, b.x, 0, b.z, ry);
-    neon.merge(ctx.neon, b.x, 0, b.z, ry);
-    snow.merge(ctx.snow, b.x, 0, b.z, ry);
-    water.merge(ctx.water, b.x, 0, b.z, ry);
-    for (const w of ctx.wins) { const p = tx(w.x, w.z); winSpecs.push({ ...w, x: p.x, z: p.z, ry: w.ry + ry }); }
-    for (const t of ctx.trees) { const p = tx(t.x, t.z); trees.push({ ...t, x: p.x, z: p.z }); }
-    for (const l of ctx.lamps) { const p = tx(l.x, l.z); main.cyl(0.1, 0.14, l.h, 5, P.darkMetal, p.x, 0, p.z); lamps.push({ ...l, x: p.x, z: p.z }); }
-    for (const d of ctx.dyn) { const p = tx(d.x, d.z); dyn.push({ ...d, x: p.x, z: p.z, ry: d.ry + ry }); }
-    // невидимый объём для клика
-    const h = Math.max(2, b.height + 2, b.def.outdoor ? 1 : 3);
-    const pm = new THREE.Mesh(new THREE.BoxGeometry(b.w - 1, h, b.d - 1), PICK_MAT);
-    pm.position.set(b.x, h / 2, b.z);
-    pm.userData.building = b.id;
-    pick.push(pm);
-    group.add(pm);
-  }
+    const bm = new GB(), bg = new GB(), bn = new GB(), bs = new GB(), bw = new GB();
+    const bgroup = new THREE.Group();
+    for (const b of world.buildings) {
+      if (`${b.block[0]},${b.block[1]}` !== key) continue;
+      const prev = caches.get(b.id);
+      if (prev?.pick) { group.remove(prev.pick); prev.pick.geometry.dispose(); }
+      const style = STYLES[b.type];
+      const cache: Cache = { wins: [], trees: [], lamps: [], dyn: [], boxes: [], pick: null };
+      caches.set(b.id, cache);
+      if (!style) continue;
+      const ctx = new BuildCtx(b, new RNG(b.seed));
+      style(ctx);
+      const ry = Math.atan2(b.faceX, b.faceZ);
+      const cos = Math.cos(ry), sin = Math.sin(ry);
+      const tx = (x: number, z: number) => ({ x: b.x + x * cos + z * sin, z: b.z - x * sin + z * cos });
+      for (const part of ctx.gb.parts) {
+        part.computeBoundingBox();
+        const bb = part.boundingBox!;
+        if (bb.max.y - bb.min.y < 1.4 || bb.min.y > 1.0) continue;
+        if ((bb.max.x - bb.min.x) * (bb.max.z - bb.min.z) < 0.05) continue;
+        const corners = [tx(bb.min.x, bb.min.z), tx(bb.max.x, bb.max.z), tx(bb.min.x, bb.max.z), tx(bb.max.x, bb.min.z)];
+        cache.boxes.push({ x0: Math.min(...corners.map((c) => c.x)), x1: Math.max(...corners.map((c) => c.x)), z0: Math.min(...corners.map((c) => c.z)), z1: Math.max(...corners.map((c) => c.z)), h: bb.max.y });
+      }
+      bm.merge(ctx.gb, b.x, 0, b.z, ry);
+      bg.merge(ctx.grass, b.x, 0, b.z, ry);
+      bn.merge(ctx.neon, b.x, 0, b.z, ry);
+      bs.merge(ctx.snow, b.x, 0, b.z, ry);
+      bw.merge(ctx.water, b.x, 0, b.z, ry);
+      for (const w of ctx.wins) { const p = tx(w.x, w.z); cache.wins.push({ ...w, x: p.x, z: p.z, ry: w.ry + ry }); }
+      for (const t of ctx.trees) { const p = tx(t.x, t.z); cache.trees.push({ ...t, x: p.x, z: p.z }); }
+      for (const l of ctx.lamps) { const p = tx(l.x, l.z); bm.cyl(0.1, 0.14, l.h, 5, P.darkMetal, p.x, 0, p.z); cache.lamps.push({ ...l, x: p.x, z: p.z }); }
+      for (const d of ctx.dyn) { const p = tx(d.x, d.z); cache.dyn.push({ ...d, x: p.x, z: p.z, ry: d.ry + ry }); }
+      const h = Math.max(2, b.height + 2, b.def.outdoor ? 1 : 3);
+      const pm = new THREE.Mesh(new THREE.BoxGeometry(b.w - 1, h, b.d - 1), PICK_MAT);
+      pm.position.set(b.x, h / 2, b.z);
+      pm.userData.building = b.id;
+      cache.pick = pm;
+      group.add(pm);
+    }
+    const add = (g: GB, m: THREE.Material, shadow: boolean, order = 0) => {
+      if (!g.parts.length) return;
+      const mesh = new THREE.Mesh(g.build(), m);
+      mesh.castShadow = shadow;
+      mesh.receiveShadow = true;
+      mesh.renderOrder = order;
+      bgroup.add(mesh);
+    };
+    add(bm, mat, true);
+    add(bg, grassMat, false);
+    add(bn, neonMat, false);
+    add(bs, snowMat, false, 2);
+    add(bw, waterMat, false);
+    blockGroups.set(key, bgroup);
+    group.add(bgroup);
+  };
+  const keys = new Set(world.buildings.map((b) => `${b.block[0]},${b.block[1]}`));
+  for (const k of keys) buildBlock(k);
 
   // ——— за городом: лес и холмы
   for (let i = 0; i < 420; i++) {
@@ -204,7 +245,7 @@ export function buildCity(world: World, transport: Transport): CityMeshes {
     const r = rng.range(HALF_CITY + 22, HALF_CITY + 190);
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     if (Math.max(Math.abs(x), Math.abs(z)) < HALF_CITY + 16) continue;
-    trees.push({ x, z, kind: rng.pick(['pine', 'pine', 'round', 'birch', 'pine']), s: rng.range(1.1, 2) });
+    baseTrees.push({ x, z, kind: rng.pick(['pine', 'pine', 'round', 'birch', 'pine']), s: rng.range(1.1, 2) });
   }
   for (let i = 0; i < 26; i++) {
     const a = (i / 26) * Math.PI * 2 + rng.range(-0.1, 0.1);
@@ -212,36 +253,20 @@ export function buildCity(world: World, transport: Transport): CityMeshes {
     grass.ico(rng.range(40, 80), 0xc8e6b0, Math.cos(a) * r, -18, Math.sin(a) * r, { jitter: 12, seed: i });
   }
 
-  // стволы деревьев
-  for (const t of trees) if (t.kind !== 'bush' && Math.max(Math.abs(t.x), Math.abs(t.z)) < HALF_CITY + 10 && !t.y) collision.addCircle({ x: t.x, z: t.z, r: (t.kind === 'willow' ? 0.4 : 0.28) * t.s });
-
-  // ——— материалы и меши
-  const mat = lowpolyMaterial();
+  // ——— базовые меши (дороги, тротуары, остановки)
   const mainMesh = new THREE.Mesh(main.build(), mat);
   mainMesh.castShadow = true;
   mainMesh.receiveShadow = true;
   group.add(mainMesh);
-
-  const roadMat = lowpolyMaterial({ roughness: 0.85, metalness: 0.05 });
   const roadMesh = new THREE.Mesh(road.build(), roadMat);
   roadMesh.receiveShadow = true;
   group.add(roadMesh);
-
-  const grassMat = lowpolyMaterial({ color: P.grass });
   const grassMesh = new THREE.Mesh(grass.build(), grassMat);
   grassMesh.receiveShadow = true;
   group.add(grassMesh);
-
-  const neonMat = new THREE.MeshBasicMaterial({ vertexColors: true });
-  group.add(new THREE.Mesh(neon.build(), neonMat));
-
-  const snowMat = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0, flatShading: true, depthWrite: false });
-  const snowMesh = new THREE.Mesh(snow.build(), snowMat);
-  snowMesh.renderOrder = 2;
-  group.add(snowMesh);
-
-  const waterMat = new THREE.MeshStandardMaterial({ color: P.water, roughness: 0.15, metalness: 0.2, transparent: true, opacity: 0.88, flatShading: true });
-  group.add(new THREE.Mesh(water.build(), waterMat));
+  if (neon.parts.length) group.add(new THREE.Mesh(neon.build(), neonMat));
+  if (snow.parts.length) group.add(new THREE.Mesh(snow.build(), snowMat));
+  if (water.parts.length) group.add(new THREE.Mesh(water.build(), waterMat));
 
   // земля вокруг
   const groundMat = new THREE.MeshStandardMaterial({ color: P.grass, roughness: 1, flatShading: true });
@@ -258,25 +283,57 @@ export function buildCity(world: World, transport: Transport): CityMeshes {
   ground.receiveShadow = true;
   group.add(ground);
 
-  // окна
   const winMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-  const windows = new THREE.InstancedMesh(WIN_GEO, winMat, Math.max(1, winSpecs.length));
-  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
-  const winRand = new Float32Array(winSpecs.length);
-  winSpecs.forEach((w, i) => {
-    q.setFromAxisAngle(up, w.ry);
-    p.set(w.x, w.y, w.z);
-    s.set(w.sx, w.sy, 1);
-    m.compose(p, q, s);
-    windows.setMatrixAt(i, m);
-    windows.setColorAt(i, new THREE.Color(0x334455));
-    winRand[i] = rng.next();
-  });
-  windows.instanceMatrix.needsUpdate = true;
-  group.add(windows);
+  const out: CityMeshes = {
+    group, roadMat, grassMat, groundMat, neonMat, snowMat, waterMat,
+    windows: new THREE.InstancedMesh(WIN_GEO, winMat, 1), winSpecs: [], winRand: new Float32Array(0),
+    trees: [], lamps: [], dyn: [], pick: [], lightHeads, stops, collision,
+    rebuildBuilding: () => undefined, onRebuild: undefined,
+  };
 
+  /** пересобрать окна, деревья, фонари, коллизии из кэшей */
+  const refresh = () => {
+    out.winSpecs = [];
+    out.trees = baseTrees.slice();
+    out.lamps = baseLamps.slice();
+    out.dyn = [];
+    out.pick = [];
+    collision.clear();
+    for (const c of caches.values()) {
+      out.winSpecs.push(...c.wins);
+      out.trees.push(...c.trees);
+      out.lamps.push(...c.lamps);
+      out.dyn.push(...c.dyn);
+      for (const b of c.boxes) collision.addBox(b);
+      if (c.pick) out.pick.push(c.pick);
+    }
+    for (const t of out.trees) if (t.kind !== 'bush' && Math.max(Math.abs(t.x), Math.abs(t.z)) < HALF_CITY + 10 && !t.y) collision.addCircle({ x: t.x, z: t.z, r: (t.kind === 'willow' ? 0.4 : 0.28) * t.s });
+    group.remove(out.windows);
+    out.windows.dispose();
+    const windows = new THREE.InstancedMesh(WIN_GEO, winMat, Math.max(1, out.winSpecs.length));
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
+    out.winRand = new Float32Array(out.winSpecs.length);
+    out.winSpecs.forEach((w, i) => {
+      q.setFromAxisAngle(up, w.ry);
+      p.set(w.x, w.y, w.z);
+      s.set(w.sx, w.sy, 1);
+      m.compose(p, q, s);
+      windows.setMatrixAt(i, m);
+      windows.setColorAt(i, new THREE.Color(0x334455));
+      out.winRand[i] = ((Math.sin(w.x * 12.9898 + w.y * 78.233 + w.z * 37.719) * 43758.5453) % 1 + 1) % 1;
+    });
+    windows.instanceMatrix.needsUpdate = true;
+    out.windows = windows;
+    group.add(windows);
+  };
+  refresh();
+  out.rebuildBuilding = (b: Building) => {
+    buildBlock(`${b.block[0]},${b.block[1]}`);
+    refresh();
+    out.onRebuild?.();
+  };
   void shadeColor;
-  return { group, roadMat, grassMat, groundMat, neonMat, snowMat, waterMat, windows, winSpecs, winRand, trees, lamps, dyn, pick, lightHeads, stops, collision };
+  return out;
 }
 
 const PICK_MAT = new THREE.MeshBasicMaterial({ visible: false });
