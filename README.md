@@ -8,7 +8,7 @@
 npm install
 npm run dev          # http://localhost:5173
 npm run build        # сборка в dist/
-npm run build:single # всё в один html-файл: dist-single/index.html
+npm run build:single # один html-файл (three.js с CDN): dist-single/index.html
 ```
 
 ## Что внутри
