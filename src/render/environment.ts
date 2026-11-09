@@ -61,6 +61,8 @@ export class Environment {
   private lastLightning = -1;
   private flash = 0;
   night = 0;
+  /** множитель плотности осадков и облаков (качество) */
+  scale = 1;
   daylight = 1;
   horizon = new THREE.Color();
   sunDir = new THREE.Vector3();
@@ -270,7 +272,7 @@ export class Environment {
     fog.density = 0.0011 + w.fog * 0.011 + w.intensity * 0.0025 + (w.def.id === 'blizzard' ? 0.006 : 0);
 
     // облака
-    const nClouds = Math.round(clamp(cloud) * 68 + 2);
+    const nClouds = Math.round((clamp(cloud) * 68 + 2) * (0.5 + 0.5 * this.scale));
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
     const drift = (2 + w.wind * 14) * dt;
     for (let i = 0; i < 70; i++) {
@@ -295,7 +297,7 @@ export class Environment {
     const I = w.intensity;
     const windX = w.wind * 22, windZ = w.wind * 9;
     const rainOn = (precip === 'rain' || precip === 'sleet') ? I : 0;
-    const nRain = Math.floor(this.RAIN_N * rainOn * (precip === 'sleet' ? 0.5 : 1));
+    const nRain = Math.floor(this.RAIN_N * rainOn * (precip === 'sleet' ? 0.5 : 1) * this.scale);
     this.rain.visible = nRain > 0;
     if (nRain > 0) {
       const p = this.rainPos;
@@ -312,7 +314,7 @@ export class Environment {
       (this.rain.material as THREE.LineBasicMaterial).opacity = 0.35 + 0.3 * this.daylight;
     }
     const snowOn = precip === 'snow' ? I : precip === 'sleet' ? I * 0.5 : 0;
-    const nSnow = Math.floor(this.SNOW_N * snowOn);
+    const nSnow = Math.floor(this.SNOW_N * snowOn * this.scale);
     this.snow.visible = nSnow > 0;
     if (nSnow > 0) {
       const p = this.snowPos;
@@ -330,7 +332,7 @@ export class Environment {
       (this.snow.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
       (this.snow.material as THREE.PointsMaterial).size = w.def.id === 'blizzard' ? 0.7 : 0.55;
     }
-    const nHail = precip === 'hail' ? Math.floor(this.HAIL_N * I) : 0;
+    const nHail = precip === 'hail' ? Math.floor(this.HAIL_N * I * this.scale) : 0;
     this.hail.visible = nHail > 0;
     if (nHail > 0) {
       const p = this.hailPos;

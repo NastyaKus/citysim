@@ -72,6 +72,7 @@ export interface Vehicle {
   onArrive?: (v: Vehicle) => void;
   label?: string;
   travelled: number;
+  blocked?: boolean;
 }
 
 export interface BusStop {
@@ -108,6 +109,8 @@ export class Transport {
   rng: RNG;
   spawnAcc = 0;
   avgSpeedRatio = 1;
+  /** точки, перед которыми машины тормозят (игрок) */
+  obstacles: V2[] = [];
   constructor(private sim: Sim, private world: World) {
     this.rng = new RNG(777);
     this.buildRoutes();
@@ -374,6 +377,17 @@ export class Transport {
         if (nextEdge && nextEdge.key >= 0) {
           const tail = firstOn(nextEdge.key);
           if (tail && tail !== v && v.ghost <= 0) gap = Math.min(gap, seg.len - v.s + (coord(tail) - nextEdge.base) - (tail.len + v.len) / 2 - 1.6);
+        }
+      }
+      // пешеход-игрок на полосе
+      v.blocked = false;
+      for (const o of this.obstacles) {
+        const rx = o.x - v.x, rz = o.z - v.z;
+        const along = rx * v.dirX + rz * v.dirZ;
+        const lat = Math.abs(-rx * v.dirZ + rz * v.dirX);
+        if (along > 0 && along < 16 && lat < 2.3) {
+          gap = Math.min(gap, along - v.len / 2 - 1.6);
+          v.blocked = true;
         }
       }
       // автобусные остановки

@@ -84,6 +84,7 @@ export class Sim {
   }
 
   regenerate() {
+    for (const c of this.citizens) c.controlled = false;
     for (const v of this.transport.vehicles) if (v.role === 'citizen' || v.role === 'taxi') v.done = true;
     for (const st of this.transport.stops) st.waiting = [];
     for (const v of this.transport.vehicles) v.passengers = [];
@@ -149,11 +150,37 @@ export class Sim {
     if (Math.floor(now * 2) !== Math.floor((now - dt) * 2)) this.updateWindows();
   }
 
+  /** колбэк: у управляемого жителя закончилось занятие */
+  onPlayerActivityEnd?: (c: Citizen) => void;
+
+  /** вывести жителя из здания на улицу у входа */
+  emerge(c: Citizen) {
+    const b = c.at >= 0 ? this.world.buildings[c.at] : null;
+    if (b) {
+      b.inside.delete(c.id);
+      if (!b.def.outdoor || c.state !== 'outdoor') { c.x = b.entrance.pos.x; c.z = b.entrance.pos.z; }
+      c.lastPlace = b.id;
+    }
+    c.at = -1;
+    c.act = null;
+    c.trip = null;
+    c.state = 'walk';
+  }
+
   updateCitizen(c: Citizen, dt: number) {
     const now = this.clock.total;
     const brain = this.brain;
     brain.updateNeeds(c, dt);
+    if (c.controlled) {
+      if (c.act && now >= c.actEnd) {
+        brain.endActivity(c);
+        this.emerge(c);
+        this.onPlayerActivityEnd?.(c);
+      }
+      return;
+    }
     c.moving = 0;
+    if (c.pausedUntil && c.pausedUntil > now) return;
     const trip = c.trip;
     if (trip) {
       switch (trip.stage) {
@@ -371,7 +398,7 @@ export class Sim {
 
   /** заставить жителя пойти на занятие (событие, приглашение) */
   force(c: Citizen, act: ActivityDef, b: Building, dur: number) {
-    if (!c.alive) return;
+    if (!c.alive || c.controlled) return;
     if (c.trip) {
       // прервать текущую поездку: если в машине/автобусе — дождёмся конца
       if (c.trip.stage === 'drive' || c.trip.stage === 'ride' || c.trip.stage === 'wait') return;
@@ -438,7 +465,7 @@ export class Sim {
     }
     // скорая для тяжело больных
     for (const c of this.citizens) {
-      if (c.alive && c.sick > 0 && c.needs.health < 12 && !c.trip && c.act?.id !== 'hospitalized' && this.rng.chance(0.5)) this.events.ambulanceFor(c);
+      if (c.alive && !c.controlled && c.sick > 0 && c.needs.health < 12 && !c.trip && c.act?.id !== 'hospitalized' && this.rng.chance(0.5)) this.events.ambulanceFor(c);
     }
     if (h === 9 && !this.clock.isWeekend) this.adjustEmployment();
     if (h === 6) {

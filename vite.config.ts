@@ -19,6 +19,7 @@ const importMap: Plugin = {
 export default defineConfig(({ mode }) => ({
   base: './',
   plugins: mode === 'single' ? [importMap, viteSingleFile()] : [],
+  define: { __SINGLE__: JSON.stringify(mode === 'single') },
   build: {
     outDir: mode === 'single' ? 'dist-single' : 'dist',
     chunkSizeWarningLimit: 2000,

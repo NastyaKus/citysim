@@ -102,6 +102,8 @@ export interface Citizen {
   alive: boolean;
   lastPlace: number;
   birthdayDay: number;
+  controlled?: boolean;
+  pausedUntil?: number;
 }
 
 const SKINS = [0xf5d0b0, 0xe8b894, 0xd9a07a, 0xc68863, 0xa26a48, 0x8a5a3c, 0xf2c9a8];

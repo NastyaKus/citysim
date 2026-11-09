@@ -17,6 +17,12 @@ export interface UIHooks {
   follow: (on: boolean) => void;
   regenerate: () => void;
   skipTo: (hour: number) => void;
+  play: (id?: number) => void;
+  fullscreen: () => void;
+  canFullscreen: () => boolean;
+  quality: (q: Params['quality']) => void;
+  sound: () => void;
+  click: () => void;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string, string> = {}, html = ''): HTMLElementTagNameMap[K] {
@@ -68,23 +74,31 @@ export class UI {
     this.skipping = el('div', { id: 'skipping', class: 'panel' }, '⏩ перематываем время…');
     const bl = el('button', { class: 'collapse-btn', style: 'left:12px' }, '☰');
     const br = el('button', { class: 'collapse-btn', style: 'right:12px' }, '📊');
-    bl.onclick = () => this.controls.classList.toggle('open');
-    br.onclick = () => this.stats.classList.toggle('open');
+    bl.onclick = () => { this.hooks.click(); this.stats.classList.remove('open'); this.controls.classList.toggle('open'); };
+    br.onclick = () => { this.hooks.click(); this.controls.classList.remove('open'); this.stats.classList.toggle('open'); };
     app.append(this.top, this.controls, this.stats, this.news, this.inspector, this.tooltip, this.label, this.skipping, bl, br);
     this.buildTop();
     this.buildControls();
     this.buildStats();
-    this.news.innerHTML = '<h4>📰 Новости города</h4><div class="list"></div>';
+    this.news.innerHTML = '<h4>📰 Новости города <span class="news-more">▴</span></h4><div class="list"></div>';
+    this.news.querySelector('h4')!.addEventListener('click', () => this.news.classList.toggle('expanded'));
   }
 
   private buildTop() {
     this.top.innerHTML = `<span class="brand">🏙️ Городок</span><span class="sep"></span>
       <div><div class="clock" id="tb-clock">06:30</div></div><div class="day" id="tb-day"></div><span class="sep"></span>
-      <div class="weather" id="tb-weather"></div><span class="sep"></span><div class="speeds" id="tb-speeds"></div>`;
+      <div class="weather" id="tb-weather"></div><span class="sep"></span><div class="speeds" id="tb-speeds"></div>
+      <div class="tb-tools"><button id="tb-play" title="Играть за жителя">🎮</button><button id="tb-sound" title="Звук">🔊</button><button id="tb-fs" title="Полный экран">⛶</button></div>`;
+    this.q<HTMLButtonElement>('#tb-play', this.top).onclick = () => { this.hooks.click(); this.hooks.play(this.selection?.kind === 'citizen' ? this.selection.id : undefined); };
+    this.q<HTMLButtonElement>('#tb-sound', this.top).onclick = () => { this.p.muted = !this.p.muted; this.hooks.sound(); this.syncAll(); this.hooks.click(); };
+    const fs = this.q<HTMLButtonElement>('#tb-fs', this.top);
+    fs.onclick = () => { this.hooks.click(); this.hooks.fullscreen(); };
+    if (!this.hooks.canFullscreen()) fs.hidden = true;
     const sp = this.top.querySelector('#tb-speeds')!;
     for (const [label, v] of SPEEDS) {
       const b = el('button', { title: v ? `${v * 60} игровых секунд за секунду` : 'пауза' }, label);
       b.onclick = () => {
+        this.hooks.click();
         if (v === 0) this.p.paused = !this.p.paused;
         else { this.p.paused = false; this.p.timeSpeed = v; }
         this.refreshSpeeds();
@@ -231,15 +245,32 @@ export class UI {
 
     // вид
     const v = this.section('👁 Вид');
+    v.append(el('div', { class: 'hint' }, 'Качество графики (на телефоне — среднее или низкое):'));
+    const qc = el('div', { class: 'chips' });
+    for (const [q, name] of [['low', '🔋 низкое'], ['medium', '⚖️ среднее'], ['high', '✨ высокое']] as const) {
+      const c = el('span', { class: 'chip' }, name);
+      c.onclick = () => { this.hooks.click(); this.hooks.quality(q); this.syncAll(); };
+      qc.append(c);
+      this.bindings.push(() => c.classList.toggle('on', this.p.quality === q));
+    }
+    v.append(qc);
     this.toggle(v, 'Тени', 'shadows');
     this.toggle(v, 'Подписи над выбранным', 'labels');
     this.toggle(v, 'Тепловая карта пробок', 'heatmap');
     this.toggle(v, 'Маршруты автобусов', 'showRoutes');
-    v.append(el('div', { class: 'hint' }, 'Мышь: левая — вращать, правая — двигать, колесо — зум. WASD/стрелки — двигаться. Клик по человеку, машине или зданию — подробности.'));
+    const snd = this.section('🔊 Звук');
+    this.toggle(snd, 'Без звука', 'muted', () => this.hooks.sound());
+    this.slider(snd, 'Общая громкость', 'volume', 0, 1, 0.01, (x) => `${Math.round(x * 100)}%`, () => this.hooks.sound());
+    this.slider(snd, 'Город и погода', 'ambVolume', 0, 1, 0.01, (x) => `${Math.round(x * 100)}%`, () => this.hooks.sound());
+    this.slider(snd, 'Эффекты', 'fxVolume', 0, 1, 0.01, (x) => `${Math.round(x * 100)}%`, () => this.hooks.sound());
+    snd.append(el('div', { class: 'hint' }, 'Все звуки синтезируются прямо в браузере: дождь, ветер, гром, птицы, сирены, колокол, шаги. Звук включается после первого касания.'));
+    v.append(el('div', { class: 'hint' }, 'Телефон: один палец — двигать карту, два — крутить и приближать. Мышь: левая — вращать, правая — двигать, колесо — зум. WASD/стрелки — двигаться. Клик по человеку, машине или зданию — подробности.'));
   }
 
   syncAll() {
     for (const b of this.bindings) b();
+    const sb = this.top.querySelector('#tb-sound');
+    if (sb) sb.textContent = this.p.muted ? '🔇' : '🔊';
     for (const [id, c] of this.weatherChips) c.classList.toggle('on', this.sim.weather.def.id === id);
     for (const [id, c] of this.seasonChips) c.classList.toggle('on', this.p.season === id);
     this.refreshSpeeds();
@@ -361,6 +392,8 @@ export class UI {
     this.inspector.querySelector<HTMLElement>('.close')!.onclick = () => this.hooks.select(null);
     this.inspector.querySelectorAll<HTMLElement>('[data-cit]').forEach((e) => (e.onclick = () => this.hooks.select({ kind: 'citizen', id: Number(e.dataset.cit) })));
     this.inspector.querySelectorAll<HTMLElement>('[data-bld]').forEach((e) => (e.onclick = () => this.hooks.select({ kind: 'building', id: Number(e.dataset.bld) })));
+    const pb = this.inspector.querySelector<HTMLElement>('.play-as');
+    if (pb && sel.kind === 'citizen') pb.onclick = () => { this.hooks.click(); this.hooks.play(sel.id); };
     const fb = this.inspector.querySelector<HTMLElement>('.follow');
     if (fb) fb.onclick = () => this.hooks.follow(!this.following);
   }
@@ -410,7 +443,7 @@ export class UI {
         ${transport ? `<span>есть</span><span>${transport}</span>` : ''}${fam ? `<span>семья</span><span>${fam}</span>` : ''}
         ${c.friends.length ? `<span>друзья</span><span>${c.friends.slice(0, 6).map((f) => this.cLink(f)).join(', ')}</span>` : ''}</div>
       <div class="stat-title"><span>Потребности</span></div><div class="needs">${needs}</div>
-      <div style="margin-top:10px;display:flex;gap:6px"><button class="btn follow">${this.following ? '⏹ Перестать следить' : '🎥 Следить камерой'}</button></div>
+      <div style="margin-top:10px;display:flex;gap:6px"><button class="btn follow">${this.following ? '⏹ Перестать следить' : '🎥 Следить'}</button><button class="btn play-as">🎮 Играть за ${esc(c.first)}</button></div>
       <div class="stat-title"><span>Дневник</span></div>
       <div class="diary">${c.diary.slice(0, 18).map((d) => `<div><span class="tm">${fmtTime(d.t)}</span><span>${esc(d.text)}</span></div>`).join('') || '<div class="hint">пока пусто</div>'}</div>`;
   }

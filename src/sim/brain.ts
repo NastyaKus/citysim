@@ -337,7 +337,7 @@ export class Brain {
   }
 
   isAvailable(f: Citizen) {
-    return f.alive && !f.trip && f.at === f.home && (!f.act || !BUSY.has(f.act.id)) && f.sick === 0 && f.age >= 6 && this.freeMinutes(f) > 60;
+    return f.alive && !f.controlled && !f.trip && f.at === f.home && (!f.act || !BUSY.has(f.act.id)) && f.sick === 0 && f.age >= 6 && this.freeMinutes(f) > 60;
   }
 
   availableFriend(c: Citizen, atHomeOk: boolean): Citizen | undefined {
@@ -346,7 +346,7 @@ export class Brain {
     for (const id of fs) {
       const f = sim.citizens[id];
       if (!f) continue;
-      if (atHomeOk) { if (f.at === f.home && (!f.act || f.act.id !== 'sleep') && !f.trip) return f; continue; }
+      if (atHomeOk) { if (!f.controlled && f.at === f.home && (!f.act || f.act.id !== 'sleep') && !f.trip) return f; continue; }
       if (this.isAvailable(f)) return f;
     }
     return undefined;

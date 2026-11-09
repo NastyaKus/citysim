@@ -15,6 +15,7 @@ export class FxRenderer {
   sparks = new Particles(4000, 'spark');
   private fireLights: THREE.PointLight[] = [];
   private meteorLines: { line: THREE.Line; t: number; v: THREE.Vector3 }[] = [];
+  onBurst?: (x: number, z: number) => void;
 
   constructor(private sim: Sim) {
     this.group.add(this.fire.points, this.smoke.points, this.sparks.points);
@@ -300,6 +301,7 @@ export class FxRenderer {
         case 'fireworks': {
           if (Math.random() < dt * 2.2) {
             const x = f.x + (Math.random() - 0.5) * 30, z = f.z + (Math.random() - 0.5) * 30, y = 40 + Math.random() * 25;
+            this.onBurst?.(x, z);
             const c = new THREE.Color().setHSL(Math.random(), 1, 0.55);
             const n = 160;
             for (let i = 0; i < n; i++) {
@@ -393,6 +395,11 @@ export class FxRenderer {
     this.fire.update(dt, sim.weather.wind);
     this.smoke.update(dt, sim.weather.wind);
     this.sparks.update(dt, 0);
+  }
+
+  /** сердечки над головой (погладили собаку) */
+  heart(x: number, z: number) {
+    for (let i = 0; i < 8; i++) this.smoke.spawn(x + (Math.random() - 0.5) * 0.8, 1.6 + Math.random() * 0.4, z + (Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 0.5, 1.2 + Math.random(), (Math.random() - 0.5) * 0.5, 0xff4d88, 0.5, 1.4);
   }
 
   setScale(h: number) {

@@ -7,6 +7,7 @@ import { P } from './palette';
 import { World, PITCH, ROAD_HALF, LOT_EDGE, STOP_OFF, BLOCKS, HALF_CITY } from '../sim/world';
 import type { Transport } from '../sim/transport';
 import { RNG } from '../sim/rng';
+import { Collision } from '../game/collision';
 
 export interface CityMeshes {
   group: THREE.Group;
@@ -25,6 +26,7 @@ export interface CityMeshes {
   pick: THREE.Mesh[];
   lightHeads: { node: number; axis: 'x' | 'z'; pos: THREE.Vector3 }[];
   stops: { x: number; z: number; ry: number; color: number }[];
+  collision: Collision;
 }
 
 const WIN_GEO = new THREE.BoxGeometry(1, 1.3, 0.14);
@@ -43,6 +45,7 @@ export function buildCity(world: World, transport: Transport): CityMeshes {
   const lamps: LampSpec[] = [];
   const dyn: DynSpec[] = [];
   const pick: THREE.Mesh[] = [];
+  const collision = new Collision();
 
   // ——— дороги
   for (const e of world.edges) {
@@ -165,6 +168,18 @@ export function buildCity(world: World, transport: Transport): CityMeshes {
     const ry = Math.atan2(b.faceX, b.faceZ);
     const cos = Math.cos(ry), sin = Math.sin(ry);
     const tx = (x: number, z: number) => ({ x: b.x + x * cos + z * sin, z: b.z - x * sin + z * cos });
+    // стены для коллизий игрока: высокие части, стоящие на земле
+    for (const part of ctx.gb.parts) {
+      part.computeBoundingBox();
+      const bb = part.boundingBox!;
+      if (bb.max.y - bb.min.y < 1.4 || bb.min.y > 1.0) continue;
+      if ((bb.max.x - bb.min.x) * (bb.max.z - bb.min.z) < 0.05) continue;
+      const corners = [tx(bb.min.x, bb.min.z), tx(bb.max.x, bb.max.z), tx(bb.min.x, bb.max.z), tx(bb.max.x, bb.min.z)];
+      collision.addBox({
+        x0: Math.min(...corners.map((c) => c.x)), x1: Math.max(...corners.map((c) => c.x)),
+        z0: Math.min(...corners.map((c) => c.z)), z1: Math.max(...corners.map((c) => c.z)), h: bb.max.y,
+      });
+    }
     main.merge(ctx.gb, b.x, 0, b.z, ry);
     grass.merge(ctx.grass, b.x, 0, b.z, ry);
     neon.merge(ctx.neon, b.x, 0, b.z, ry);
@@ -196,6 +211,9 @@ export function buildCity(world: World, transport: Transport): CityMeshes {
     const r = rng.range(HALF_CITY + 230, HALF_CITY + 320);
     grass.ico(rng.range(40, 80), 0xc8e6b0, Math.cos(a) * r, -18, Math.sin(a) * r, { jitter: 12, seed: i });
   }
+
+  // стволы деревьев
+  for (const t of trees) if (t.kind !== 'bush' && Math.max(Math.abs(t.x), Math.abs(t.z)) < HALF_CITY + 10 && !t.y) collision.addCircle({ x: t.x, z: t.z, r: (t.kind === 'willow' ? 0.4 : 0.28) * t.s });
 
   // ——— материалы и меши
   const mat = lowpolyMaterial();
@@ -258,7 +276,7 @@ export function buildCity(world: World, transport: Transport): CityMeshes {
   group.add(windows);
 
   void shadeColor;
-  return { group, roadMat, grassMat, groundMat, neonMat, snowMat, waterMat, windows, winSpecs, winRand, trees, lamps, dyn, pick, lightHeads, stops };
+  return { group, roadMat, grassMat, groundMat, neonMat, snowMat, waterMat, windows, winSpecs, winRand, trees, lamps, dyn, pick, lightHeads, stops, collision };
 }
 
 const PICK_MAT = new THREE.MeshBasicMaterial({ visible: false });

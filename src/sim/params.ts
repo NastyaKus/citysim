@@ -31,6 +31,11 @@ export interface Params {
   showRoutes: boolean;
   heatmap: boolean;
   labels: boolean;
+  quality: 'low' | 'medium' | 'high';
+  volume: number;
+  ambVolume: number;
+  fxVolume: number;
+  muted: boolean;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -63,6 +68,11 @@ export const DEFAULT_PARAMS: Params = {
   showRoutes: false,
   heatmap: false,
   labels: true,
+  quality: 'high',
+  volume: 0.8,
+  ambVolume: 0.8,
+  fxVolume: 0.9,
+  muted: false,
 };
 
 export const WEEKDAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье'];

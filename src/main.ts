@@ -11,17 +11,42 @@ import { UI, Selection } from './ui/ui';
 import { HALF_CITY, ROAD_HALF } from './sim/world';
 import { P } from './render/palette';
 import { displayName } from './sim/citizen';
+import { Player } from './game/player';
+import { TouchControls } from './ui/touch';
+import { Sound } from './audio/sound';
+import { isTouch, canFullscreen, toggleFullscreen, lockLandscape, setupRotateHint, isStandalone } from './ui/mobile';
+import type { Params } from './sim/params';
+
+const SAVE_KEYS = ['volume', 'ambVolume', 'fxVolume', 'muted', 'quality'] as const;
+function loadPrefs(): Partial<Params> {
+  try {
+    const raw = localStorage.getItem('citysim-prefs');
+    return raw ? (JSON.parse(raw) as Partial<Params>) : {};
+  } catch {
+    return {};
+  }
+}
+function savePrefs(p: Params) {
+  try {
+    const o: Record<string, unknown> = {};
+    for (const k of SAVE_KEYS) o[k] = p[k];
+    localStorage.setItem('citysim-prefs', JSON.stringify(o));
+  } catch {
+    /* хранилище недоступно */
+  }
+}
 
 const GRASS: Record<string, number> = { spring: 0x9fd16a, summer: 0x84bd4f, autumn: 0xb4a650, winter: 0xb9c4b0 };
 
 async function main() {
   const loadingText = document.getElementById('loading-text')!;
   await new Promise((r) => setTimeout(r, 30));
-  const sim = new Sim();
+  const prefs = loadPrefs();
+  const sim = new Sim({ population: isTouch ? 300 : 420, quality: isTouch ? 'medium' : 'high', ...prefs });
   (window as unknown as { sim: Sim }).sim = sim;
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, sim.params.quality === 'high' ? 1.75 : sim.params.quality === 'medium' ? 1.25 : 1));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -41,6 +66,7 @@ async function main() {
   controls.minDistance = 12;
   controls.maxDistance = 650;
   controls.screenSpacePanning = false;
+  if (isTouch) controls.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE };
   (window as unknown as { __view: unknown }).__view = { camera, controls };
 
   loadingText.textContent = 'строим дома и дороги…';
@@ -54,6 +80,26 @@ async function main() {
   scene.add(agents.group);
   const fx = new FxRenderer(sim);
   scene.add(fx.group);
+  const sound = new Sound(sim);
+  fx.onBurst = (x, z) => sound.firework(x, z);
+
+  // ——— качество графики
+  function applyQuality(q: Params['quality']) {
+    sim.params.quality = q;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, q === 'high' ? 1.75 : q === 'medium' ? 1.25 : 1));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    const size = q === 'high' ? 2048 : 1024;
+    if (env.sun.shadow.mapSize.x !== size) {
+      env.sun.shadow.mapSize.set(size, size);
+      env.sun.shadow.map?.dispose();
+      (env.sun.shadow as unknown as { map: null }).map = null;
+    }
+    if (q === 'low') sim.params.shadows = false;
+    else if (q === 'high') sim.params.shadows = true;
+    env.scale = q === 'high' ? 1 : q === 'medium' ? 0.55 : 0.3;
+    savePrefs(sim.params);
+  }
+  applyQuality(sim.params.quality);
 
   // тепловая карта пробок
   const heat = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55, depthWrite: false }), sim.world.edges.length);
@@ -91,9 +137,55 @@ async function main() {
     follow: (on) => { ui.following = on; ui.show(ui.selection); },
     regenerate: () => { select(null); sim.regenerate(); sim.news.push('🏙️', `Город заселён заново: ${sim.citizens.length} жителей`, 'city'); },
     skipTo: (h) => skipTo(h),
+    play: (id) => startPlay(id),
+    fullscreen: () => { void toggleFullscreen(); },
+    canFullscreen: () => canFullscreen() && !isStandalone(),
+    quality: (q) => applyQuality(q),
+    sound: () => { sound.unlock(); sound.applyVolumes(); savePrefs(sim.params); },
+    click: () => sound.play('click'),
   });
   ui.syncAll();
-  (window as unknown as { __ui: unknown }).__ui = { ui, select: (s: Selection) => select(s) };
+  (window as unknown as { __ui: unknown }).__ui = { ui, select: (s: Selection) => select(s), play: (id?: number) => startPlay(id), stop: () => stopPlay(), get player() { return player; }, get touch() { return touch; }, sound };
+
+  // ——— режим игрока
+  const player = new Player(sim, city.collision, {
+    toast: (t) => touch.toast(t),
+    sound: (k, x, z) => sound.play(k, x, z),
+    heart: (x, z) => { fx.heart(x, z); sound.play('heart'); },
+  });
+  const touch = new TouchControls(sim, player, { exit: () => stopPlay(), click: () => sound.play('click') });
+  const camGoal = new THREE.Vector3();
+  let playCamInit = false;
+
+  function startPlay(id?: number) {
+    let c = id !== undefined ? sim.citizens[id] : undefined;
+    if (!c) {
+      const cand = sim.citizens.filter((x) => x.alive && x.age >= 16 && x.act?.id !== 'sleep' && !(x.trip && (x.trip.stage === 'drive' || x.trip.stage === 'ride')));
+      c = cand.length ? cand[Math.floor(Math.random() * cand.length)] : undefined;
+    }
+    if (!c) { touch.toast('Все спят — попробуй днём'); return; }
+    const err = player.take(c);
+    if (err) { touch.toast(err); return; }
+    select(null);
+    controls.enabled = false;
+    touch.show(true);
+    playCamInit = false;
+    sound.unlock();
+    void lockLandscape();
+    touch.toast(`Ты — ${displayName(c)}. Джойстик слева, обзор справа`);
+  }
+
+  function stopPlay() {
+    const c = player.c;
+    player.release();
+    touch.show(false);
+    controls.enabled = true;
+    if (c) {
+      controls.target.set(c.x, 0, c.z);
+      camera.position.set(c.x + 30, 35, c.z + 40);
+      select({ kind: 'citizen', id: c.id });
+    }
+  }
 
   function select(s: Selection) {
     if (!s) { ui.following = false; ring.visible = false; }
@@ -133,6 +225,7 @@ async function main() {
   }
   renderer.domElement.addEventListener('pointerdown', (e) => (downAt = { x: e.clientX, y: e.clientY }));
   renderer.domElement.addEventListener('pointerup', (e) => {
+    if (player.active) return;
     if (Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 5 || e.button !== 0) return;
     const s = pick(e.clientX, e.clientY);
     select(s);
@@ -141,7 +234,7 @@ async function main() {
   let hoverAt = 0;
   renderer.domElement.addEventListener('pointermove', (e) => {
     const now = performance.now();
-    if (now - hoverAt < 90 || e.buttons) return;
+    if (now - hoverAt < 90 || e.buttons || e.pointerType !== 'mouse' || player.active) return;
     hoverAt = now;
     const s = pick(e.clientX, e.clientY);
     if (!s) return ui.showTooltip(null, 0, 0);
@@ -159,9 +252,18 @@ async function main() {
     if ((e.target as HTMLElement).tagName === 'INPUT') return;
     keys.add(e.code);
     if (e.code === 'Space') { sim.params.paused = !sim.params.paused; ui.refreshSpeeds(); e.preventDefault(); }
-    if (e.code === 'Escape') select(null);
+    if (e.code === 'Escape') { if (player.active) stopPlay(); else select(null); }
+    if (e.code === 'KeyE' && player.active) touch.doAct();
   });
   window.addEventListener('keyup', (e) => keys.delete(e.code));
+  const unlock = () => sound.unlock();
+  window.addEventListener('pointerdown', unlock, { capture: true });
+  window.addEventListener('keydown', unlock, { capture: true });
+  document.addEventListener('visibilitychange', () => sound.suspend(document.hidden));
+  setupRotateHint();
+  if ('serviceWorker' in navigator && !__SINGLE__ && location.protocol.startsWith('http') && window.top === window && !import.meta.env.DEV) {
+    navigator.serviceWorker.register('./sw.js').catch(() => undefined);
+  }
   window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
@@ -176,6 +278,9 @@ async function main() {
   const clock = new THREE.Clock();
   let time = 0;
   let uiAt = 0, winAt = 0;
+  let keysWasMoving = false, shiftWas = false;
+  let lastNewsId = -1;
+  let fpsFrames = 0, fpsChecked = false;
   const col = new THREE.Color();
   const grassCol = new THREE.Color();
   document.getElementById('loading')!.classList.add('hide');
@@ -212,6 +317,30 @@ async function main() {
     } else sim.step(dt);
     const gdt = sim.params.paused ? 0 : dt * sim.params.timeSpeed;
 
+    // игрок
+    if (player.active) {
+      const kx = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+      const kz = (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) - (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0);
+      if (kx || kz) { player.input.x = kx; player.input.z = kz; } else if (keysWasMoving) { player.input.x = 0; player.input.z = 0; }
+      keysWasMoving = !!(kx || kz);
+      if (keys.has('ShiftLeft') || keys.has('ShiftRight')) player.input.run = true; else if (shiftWas) player.input.run = false;
+      shiftWas = keys.has('ShiftLeft') || keys.has('ShiftRight');
+      player.update(dt);
+      touch.update(dt);
+      const c = player.c!;
+      const h = 1.45 * c.look.height + 0.2;
+      const tx = c.x, ty = h, tz = c.z;
+      const cp = Math.cos(player.pitch), sp = Math.sin(player.pitch);
+      let d = player.dist;
+      const ox = Math.sin(player.yaw) * cp, oy = sp, oz = Math.cos(player.yaw) * cp;
+      const free = city.collision.rayBlock(tx, ty, tz, tx + ox * d, ty + oy * d, tz + oz * d);
+      d *= free;
+      camGoal.set(tx + ox * d, Math.max(0.6, ty + oy * d), tz + oz * d);
+      if (!playCamInit) { camera.position.copy(camGoal); playCamInit = true; }
+      else camera.position.lerp(camGoal, Math.min(1, dt * 10));
+      controls.target.set(tx, ty, tz);
+      camera.lookAt(tx, ty, tz);
+    }
     // камера: WASD
     const pan = new THREE.Vector3();
     const fwd = new THREE.Vector3().subVectors(controls.target, camera.position).setY(0).normalize();
@@ -221,7 +350,7 @@ async function main() {
     if (keys.has('KeyS') || keys.has('ArrowDown')) pan.addScaledVector(fwd, -spd);
     if (keys.has('KeyD') || keys.has('ArrowRight')) pan.addScaledVector(right, spd);
     if (keys.has('KeyA') || keys.has('ArrowLeft')) pan.addScaledVector(right, -spd);
-    if (pan.lengthSq() > 0) { ui.following = false; flyTarget = null; controls.target.add(pan); camera.position.add(pan); }
+    if (pan.lengthSq() > 0 && !player.active) { ui.following = false; flyTarget = null; controls.target.add(pan); camera.position.add(pan); }
     // слежение / перелёт
     const sel = ui.selection;
     followPos = null;
@@ -262,7 +391,36 @@ async function main() {
     }
     controls.target.x = Math.max(-HALF_CITY - 60, Math.min(HALF_CITY + 60, controls.target.x));
     controls.target.z = Math.max(-HALF_CITY - 60, Math.min(HALF_CITY + 60, controls.target.z));
-    controls.update();
+    if (!player.active) controls.update();
+    // слушатель для звука
+    {
+      const fwd2 = new THREE.Vector3();
+      camera.getWorldDirection(fwd2);
+      const rx = -fwd2.z, rz = fwd2.x;
+      const rl = Math.hypot(rx, rz) || 1;
+      sound.update(dt, {
+        x: player.active ? player.c!.x : controls.target.x,
+        z: player.active ? player.c!.z : controls.target.z,
+        rx: rx / rl, rz: rz / rl,
+        height: player.active ? 8 : camera.position.distanceTo(controls.target),
+      }, env.daylight);
+      const top = sim.news.items[0];
+      if (top && top.id !== lastNewsId) {
+        if (lastNewsId >= 0 && (top.kind === 'event' || top.kind === 'traffic') && /🔥|💥|🚑|💧|🔌|⚠️/.test(top.emoji)) sound.play('chime');
+        lastNewsId = top.id;
+      }
+    }
+    // автоподстройка качества
+    if (time > 1.5 && time < 7.5) { fpsFrames++; }
+    else if (time >= 7.5 && !fpsChecked) {
+      fpsChecked = true;
+      const fps = fpsFrames / 6;
+      if (fps < 28 && sim.params.quality !== 'low') {
+        applyQuality(sim.params.quality === 'high' ? 'medium' : 'low');
+        ui.syncAll();
+        sim.news.push('⚙️', `Графика упрощена для плавности (${Math.round(fps)} кадров/с). Можно поменять в разделе «Вид»`, 'city');
+      }
+    }
 
     env.update(dt, camera, controls.target, time);
     const night = env.night;
@@ -292,7 +450,7 @@ async function main() {
     fx.update(dt, time, night);
 
     // подпись над выбранным
-    if (followPos && sim.params.labels && sel?.kind === 'citizen') {
+    if (followPos && sim.params.labels && sel?.kind === 'citizen' && !player.active) {
       const c = sim.citizens[sel.id];
       const p = followPos.clone().setY(2.6 * c.look.height + 0.3).project(camera);
       if (p.z < 1) {
