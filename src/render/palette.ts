@@ -1,0 +1,48 @@
+// Общая тёплая пастельная палитра.
+export const P = {
+  grass: 0x8cc152,
+  grassDark: 0x6fa63d,
+  grassAutumn: 0xb8b05a,
+  grassWinter: 0xdfe8ee,
+  dirt: 0xc9a77c,
+  path: 0xe6d6b0,
+  asphalt: 0x4a4e57,
+  asphaltLight: 0x5a5f69,
+  sidewalk: 0xc8c3b8,
+  curb: 0xa9a49a,
+  marking: 0xf2f2f2,
+  markingYellow: 0xf2c94c,
+  plaza: 0xd8cbb0,
+  plazaDark: 0xbfae8e,
+  water: 0x4ea8de,
+  waterDeep: 0x2f7fb8,
+  sand: 0xead7a4,
+  trunk: 0x7a5232,
+  roofRed: 0xc0533e,
+  roofBrown: 0x8d5b3a,
+  roofGrey: 0x6c7680,
+  roofGreen: 0x4f7d5c,
+  roofBlue: 0x50709a,
+  roofFlat: 0x9aa0a6,
+  concrete: 0xb9b6ae,
+  metal: 0x8d99a6,
+  darkMetal: 0x4b525c,
+  glass: 0x9ec9e2,
+  wood: 0xa97c50,
+  white: 0xf5f5f0,
+  black: 0x222222,
+  door: 0x5a3e2b,
+  lamp: 0xffe8a8,
+  red: 0xe63946,
+  yellow: 0xf4d35e,
+  orange: 0xf4a261,
+  blue: 0x457b9d,
+  green: 0x2a9d8f,
+  pink: 0xff99c8,
+  purple: 0x8e6bbf,
+};
+
+export const TREE_GREENS = [0x6ab04c, 0x78c25a, 0x5a9e45, 0x88c46a, 0x4f8f3a];
+export const TREE_AUTUMN = [0xe58e26, 0xd35400, 0xf1c40f, 0xc0392b, 0xe67e22, 0xb9770e];
+export const TREE_SPRING = [0x9ee07a, 0xb5e68c, 0xffb7d5, 0xf8c8dc, 0x8fd16a];
+export const PINE_GREENS = [0x2f6b4f, 0x3a7d5c, 0x2b5e45];
