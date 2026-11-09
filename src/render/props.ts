@@ -290,7 +290,7 @@ export class Props {
     const sim = this.sim;
     const w = sim.weather;
     this.uniforms.uTime.value = time;
-    this.uniforms.uWind.value = 0.15 + w.wind * 1.4;
+    this.uniforms.uWind.value = sim.params.treeSway ? 0.15 + w.wind * 1.4 : 0;
     this.applySeason();
     const capOp = Math.min(1, w.snowCover * 1.3);
     for (const m of this.caps) (m as THREE.MeshLambertMaterial).opacity = capOp;

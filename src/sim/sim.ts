@@ -152,6 +152,8 @@ export class Sim {
 
   /** колбэк: у управляемого жителя закончилось занятие */
   onPlayerActivityEnd?: (c: Citizen) => void;
+  /** житель вошёл в здание (для звуков) */
+  onEnter?: (b: Building, c: Citizen) => void;
 
   /** вывести жителя из здания на улицу у входа */
   emerge(c: Citizen) {
@@ -512,6 +514,23 @@ export class Sim {
       this.news.push('🍂', `Наступает ${SEASON_NAMES[this.params.season]}`, 'weather');
     }
     this.events.daily();
+    // естественная рождаемость: шанс на пару в день
+    const yd = Math.max(3, this.params.yearDays);
+    for (const m of this.citizens) {
+      if (!m.alive || !m.female || m.partner < 0 || m.age < 20 || m.age > 42) continue;
+      const f = this.citizens[m.partner];
+      if (!f?.alive || f.home !== m.home) continue;
+      const kids = m.children.filter((k) => this.citizens[k]?.alive && this.citizens[k].age < 18).length;
+      const p = (0.55 / yd) * this.params.birthRate * (kids === 0 ? 1.2 : kids === 1 ? 0.8 : kids === 2 ? 0.35 : 0.1);
+      if (this.rng.chance(p)) this.birth(m, f);
+    }
+    // переезды из города, если людей больше нормы
+    const alive = this.citizens.filter((c) => c.alive).length;
+    const over = alive / Math.max(1, this.params.population);
+    if (this.params.migration > 0 && this.rng.chance(Math.min(0.9, 0.12 * this.params.migration * (over > 1.05 ? 3 : 1)))) {
+      const cand = this.citizens.filter((c) => c.alive && c.age >= 20 && c.at === c.home && !c.trip && !c.controlled);
+      if (cand.length) this.depart(this.rng.pick(cand));
+    }
     const s = this.stats;
     this.news.push('📰', `Итоги дня: заработано ${Math.round(s.earnedToday)}₽, потрачено ${Math.round(s.spentToday)}₽, опозданий: ${s.lateToday}`, 'economy');
   }
@@ -562,6 +581,86 @@ export class Sim {
     computeSleep(c, this.rng);
     this.brain.log(c, gender(`потерял{|а} работу (${reason})`, c.female));
     this.news.push('📉', `${displayName(c)} (${old}) потерял${c.female ? 'а' : ''} работу: ${reason}`, 'economy', { citizen: c.id });
+  }
+
+  /** рождение ребёнка у пары */
+  birth(a: Citizen, b: Citizen): Citizen {
+    const mother = a.female ? a : b;
+    const father = a.female ? b : a;
+    const female = this.rng.chance(0.5);
+    const kid = this.addCitizen(0, female, father.last.replace(/а$/, ''), mother.home);
+    kid.job = SPECIAL_JOBS.baby;
+    kid.look.height = 0.35;
+    computeSleep(kid, this.rng);
+    for (const p of [mother, father]) p.children.push(kid.id);
+    const hh = new Set([mother.id, father.id, ...mother.household, ...father.household]);
+    hh.delete(kid.id);
+    kid.household = [...hh].filter((x) => this.citizens[x]?.alive);
+    for (const id of kid.household) { const m = this.citizens[id]; if (!m.household.includes(kid.id)) m.household.push(kid.id); }
+    this.brain.beginActivity(kid, ACTIVITY_BY_ID.sleep, mother.home, 300);
+    for (const p of [mother, father]) {
+      p.mood = 100;
+      this.brain.log(p, `стал${p.female ? 'а мамой' : ' папой'}! малыша зовут ${kid.first}`);
+    }
+    // мама — в роддом
+    const hosp = this.world.byType.get('hospital')?.[0];
+    if (hosp && !mother.controlled && !mother.trip) this.force(mother, ACTIVITY_BY_ID.maternity, hosp, 300);
+    this.news.push('👶', `${mother.first} и ${father.first} стали родителями: родил${female ? 'ась дочка' : 'ся сын'} ${kid.first}!`, 'people', { citizen: kid.id });
+    this.stats.births++;
+    return kid;
+  }
+
+  /** дети растут: садик → школа → вуз или работа */
+  growUp(c: Citizen) {
+    const a = c.age;
+    c.look.height = a < 2 ? 0.35 : a < 4 ? 0.45 : a < 8 ? 0.6 : a < 13 ? 0.75 : a < 16 ? 0.9 : Math.max(c.look.height, 0.95);
+    const say = (emoji: string, text: string) => {
+      this.brain.log(c, text);
+      if (emoji !== '🧸') this.news.push(emoji, `${displayName(c)}: ${text}`, 'people', { citizen: c.id }, 0);
+    };
+    const id = c.job.id;
+    if (id === 'baby' && a >= 2) {
+      assignJob(c, SPECIAL_JOBS.toddler, this.world, this.rng);
+      say('🧸', gender('пош{ёл|ла} в детский сад', c.female));
+    } else if (id === 'toddler' && a >= 7) {
+      removeFromWork(c, this.world);
+      assignJob(c, SPECIAL_JOBS.pupil, this.world, this.rng);
+      say('🎒', gender('пош{ёл|ла} в первый класс!', c.female));
+    } else if (id === 'pupil' && a >= 17) {
+      removeFromWork(c, this.world);
+      const job = this.rng.chance(0.65) ? SPECIAL_JOBS.student : pickJob(this.rng, a, this.world);
+      assignJob(c, job, this.world, this.rng);
+      say('🎓', gender(`окончил{|а} школу и теперь ${job.id === 'student' ? 'студент{|ка}' : c.female && job.nameF ? job.nameF : job.name}`, c.female));
+    } else if (id === 'student' && a >= 23) {
+      removeFromWork(c, this.world);
+      assignJob(c, pickJob(this.rng, a, this.world), this.world, this.rng);
+      say('📜', gender(`получил{|а} диплом и устроил{ся|ась}: ${c.female && c.job.nameF ? c.job.nameF : c.job.name}`, c.female));
+    } else return;
+    computeSleep(c, this.rng);
+    this.adjustWake(c);
+  }
+
+  /** семья уезжает из города */
+  depart(c: Citizen) {
+    const members = [c, ...c.household.map((id) => this.citizens[id])].filter((m) => m && m.alive);
+    if (members.some((m) => m.controlled || (m.trip && (m.trip.stage === 'drive' || m.trip.stage === 'ride')))) return false;
+    for (const m of members) {
+      m.alive = false;
+      if (m.at >= 0) this.world.buildings[m.at]?.inside.delete(m.id);
+      const home = this.world.buildings[m.home];
+      home.residents = home.residents.filter((x) => x !== m.id);
+      removeFromWork(m, this.world);
+      if (m.trip?.stage === 'wait') { const st = this.transport.stops[m.trip.boardStop]; st.waiting = st.waiting.filter((x) => x !== m.id); }
+      m.trip = null;
+      m.act = null;
+      m.state = 'inside';
+      for (const f of m.friends) { const fr = this.citizens[f]; if (fr) fr.friends = fr.friends.filter((x) => x !== m.id); }
+      if (m.partner >= 0 && !members.includes(this.citizens[m.partner])) this.citizens[m.partner].partner = -1;
+    }
+    const who = members.length > 1 ? `Семья ${c.last.replace(/а$/, '')}ых (${members.length} чел.)` : displayName(c);
+    this.news.push('🧳', `${who} переезжа${members.length > 1 ? 'ет' : c.female ? 'ет' : 'ет'} в другой город`, 'people');
+    this.stats.departures += members.length;
+    return true;
   }
 
   addCitizen(age: number, female: boolean, last: string, home: number): Citizen {

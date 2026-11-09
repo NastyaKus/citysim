@@ -139,6 +139,11 @@ export class EventManager {
       let w = def.weight;
       if (def.id === 'accident') w *= (sim.weather.icy ? 4 : 1) * (sim.weather.fog > 0.5 ? 2.5 : 1) * (sim.weather.raining ? 1.5 : 1) * (0.5 + sim.transport.vehicles.length / 60);
       if (def.id === 'outage' && sim.weather.def.lightning) w *= 6;
+      if (def.id === 'accident') w *= sim.params.accidentRate;
+      if (def.id === 'fire') w *= sim.params.fireRate;
+      if (def.id === 'love') w *= sim.params.loveRate;
+      if (def.id === 'newcomer') w *= sim.params.migration * (sim.citizens.filter((c) => c.alive).length < sim.params.population ? 2 : 0.5);
+      if (def.id === 'baby') w = 0; // рождения идут естественным путём
       if (this.rng.chance((w * sim.params.eventRate) / span)) {
         this.trigger(def.id, false);
         break; // не больше одного случайного события в час
@@ -151,8 +156,11 @@ export class EventManager {
     const day = sim.clock.day;
     // дни рождения
     for (const c of sim.citizens) {
-      if (c.alive && c.birthdayDay === day % 60 && c.age >= 3) {
+      const yd = Math.max(3, sim.params.yearDays);
+      if (c.alive && c.birthdayDay % yd === day % yd) {
         c.age += 1;
+        sim.growUp(c);
+        if (c.age < 3) continue;
         (this as unknown as { pendingBirthdays: number[] }).pendingBirthdays ??= [];
         (this as unknown as { pendingBirthdays: number[] }).pendingBirthdays.push(c.id);
       }
@@ -882,20 +890,9 @@ export const EVENTS: EventDef[] = [
   {
     id: 'baby', name: 'Рождение ребёнка', emoji: '👶', cat: 'люди', weight: 0.12, manual: true, dur: [1, 2],
     start: (s, ev, m) => {
-      const cp = couple(s, m.rng, 23, 42);
+      const cp = couple(s, m.rng, 20, 44);
       if (!cp) return false;
-      const [a, b] = cp;
-      const female = m.rng.chance(0.5);
-      const surname = (a.female ? b.last : a.last);
-      const kid = s.addCitizen(0, female, surname, a.home);
-      kid.job = SPECIAL_JOBS.baby;
-      computeSleep(kid, m.rng);
-      a.children.push(kid.id); b.children.push(kid.id);
-      kid.household = [a.id, b.id, ...a.household.filter((x) => x !== b.id)];
-      a.household.push(kid.id); b.household.push(kid.id);
-      s.brain.beginActivity(kid, ACTIVITY_BY_ID.sleep, a.home, 300);
-      for (const p of [a, b]) { p.mood = 100; s.brain.log(p, `стал${p.female ? 'а мамой' : ' папой'}! малыша зовут ${kid.first}`); }
-      s.news.push('👶', `${a.first} и ${b.first} стали родителями: родил${female ? 'ась дочка' : 'ся сын'} ${kid.first}!`, 'people', { citizen: kid.id });
+      s.birth(cp[0], cp[1]);
       return true;
     },
   },

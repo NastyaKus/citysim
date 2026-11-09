@@ -22,7 +22,7 @@ function geoBox(w: number, h: number, d: number, y: number, z = 0) {
   return g;
 }
 
-type PartName = 'torso' | 'head' | 'hair' | 'longhair' | 'legL' | 'legR' | 'armL' | 'armR' | 'hat' | 'umbrella' | 'scarf' | 'bike' | 'dog' | 'bag';
+type PartName = 'torso' | 'head' | 'hair' | 'longhair' | 'legL' | 'legR' | 'armL' | 'armR' | 'hat' | 'umbrella' | 'scarf' | 'bike' | 'dog' | 'bag' | 'stroller';
 
 export class Agents {
   group = new THREE.Group();
@@ -96,6 +96,14 @@ export class Agents {
     for (const [x, z] of [[0.11, 0.25], [-0.11, 0.25], [0.11, -0.25], [-0.11, -0.25]]) dog.box(0.08, 0.3, 0.08, 0xeeeeee, x, 0, z);
     dog.box(0.06, 0.06, 0.3, 0xffffff, 0, 0.55, -0.45, { rx: -0.6 });
     add('dog', dog.build(), mat, 300);
+    const st = new GB();
+    st.box(0.55, 0.38, 0.8, 0xffffff, 0, 0.42, 0);
+    st.dome(0.32, 0xffffff, 0, 0.8, -0.18, { rx: -0.6 });
+    st.box(0.05, 0.05, 0.5, 0x333333, 0.22, 0.95, -0.55, { rx: -0.7 });
+    st.box(0.05, 0.05, 0.5, 0x333333, -0.22, 0.95, -0.55, { rx: -0.7 });
+    st.box(0.5, 0.05, 0.05, 0x333333, 0, 1.12, -0.74);
+    for (const [x, z] of [[0.26, 0.28], [-0.26, 0.28], [0.26, -0.28], [-0.26, -0.28]]) st.cyl(0.13, 0.13, 0.05, 8, 0x222222, x, 0.06, z, { rz: Math.PI / 2 });
+    add('stroller', st.build(), mat, 200);
     this.parts.umbrella.material = lowpolyMaterial({ side: THREE.DoubleSide });
 
     // транспорт
@@ -140,11 +148,12 @@ export class Agents {
     const raining = (w.raining || w.def.precip === 'hail') && w.intensity > 0.15;
     const cold = w.temp < 3;
     const P = this.parts;
-    let n = 0, nb = 0, nd = 0, nhair = 0, nlong = 0, nhat = 0, nu = 0, ns = 0;
+    let n = 0, nb = 0, nd = 0, nhair = 0, nlong = 0, nhat = 0, nu = 0, ns = 0, nst = 0;
+    const maxP = Math.min(MAXP, sim.params.maxVisible);
     this.pickIndex.length = 0;
     for (const c of sim.citizens) {
       if (!this.visible(c)) continue;
-      if (n >= MAXP) break;
+      if (n >= maxP) break;
       const act = c.act?.id;
       const cycling = c.state === 'bike' || (c.state === 'outdoor' && act === 'bike_ride' && c.moving > 0.1);
       const sitting = !c.trip && c.state === 'outdoor' && (act === 'bench' || act === 'picnic');
@@ -189,7 +198,7 @@ export class Agents {
       };
       const umbrella = raining && !cycling && (c.state === 'walk' || c.state === 'waitBus' || c.state === 'waitTaxi' || c.state === 'outdoor');
       if (jumping && Math.sin(time * 3 + c.id) > 0.3) { armSet(P.armL, 1, Math.PI * 0.9); armSet(P.armR, -1, Math.PI * 0.9); }
-      else if (cycling) { armSet(P.armL, 1, -0.9); armSet(P.armR, -1, -0.9); }
+      else if (cycling || act === 'stroller' || c.trip?.act.id === 'stroller') { armSet(P.armL, 1, -1.05); armSet(P.armR, -1, -1.05); }
       else if (act === 'snowman' && !c.trip) { armSet(P.armL, 1, -1.2 + Math.sin(time * 4) * 0.4); armSet(P.armR, -1, -1.2 - Math.sin(time * 4) * 0.4); }
       else if (umbrella) { armSet(P.armL, 1, -swing * 0.8); armSet(P.armR, -1, -1.9); }
       else { armSet(P.armL, 1, -swing * 0.9); armSet(P.armR, -1, swing * 0.9); }
@@ -206,6 +215,15 @@ export class Agents {
         P.bike.setMatrixAt(nb, tmp);
         P.bike.setColorAt(nb, col.set(c.look.shirt).lerp(new THREE.Color(0x555555), 0.4));
         nb++;
+      }
+      // коляска перед родителем
+      if ((act === 'stroller' || c.trip?.act.id === 'stroller') && nst < 200) {
+        v3.set(c.x + c.dirX * 0.95, 0, c.z + c.dirZ * 0.95);
+        s3.set(1, 1, 1);
+        tmp.compose(v3, q, s3);
+        P.stroller.setMatrixAt(nst, tmp);
+        P.stroller.setColorAt(nst, col.set(c.look.umbrella));
+        nst++;
       }
       // собака
       const withDog = c.hasDog && !c.dogLost && (act === 'dogwalk' || c.trip?.act.id === 'dogwalk' || (c.trip && act === 'dogwalk'));
@@ -228,7 +246,7 @@ export class Agents {
       this.pickIndex.push(c.id);
       n++;
     }
-    const counts: [PartName, number][] = [['torso', n], ['head', n], ['legL', n], ['legR', n], ['armL', n], ['armR', n], ['hair', nhair], ['longhair', nlong], ['hat', nhat], ['scarf', ns], ['umbrella', nu], ['bike', nb], ['dog', nd]];
+    const counts: [PartName, number][] = [['torso', n], ['head', n], ['legL', n], ['legR', n], ['armL', n], ['armR', n], ['hair', nhair], ['longhair', nlong], ['hat', nhat], ['scarf', ns], ['umbrella', nu], ['bike', nb], ['dog', nd], ['stroller', nst]];
     for (const [k, cnt] of counts) {
       const m = P[k];
       m.count = cnt;

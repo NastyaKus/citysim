@@ -21,6 +21,7 @@ export interface UIHooks {
   fullscreen: () => void;
   canFullscreen: () => boolean;
   quality: (q: Params['quality']) => void;
+  graphics: () => void;
   sound: () => void;
   click: () => void;
 }
@@ -205,7 +206,6 @@ export class UI {
     this.slider(pop, 'Своя машина', 'carOwnership', 0, 1, 0.01, pct, undefined, 'Доля семей с автомобилем (при заселении).');
     this.slider(pop, 'Велосипеды', 'bikeOwnership', 0, 1, 0.01, pct);
     this.slider(pop, 'Собаки', 'dogOwnership', 0, 1, 0.01, pct);
-    this.slider(pop, 'Заболеваемость', 'sickness', 0, 4, 0.1, x);
 
     // транспорт
     const tr = this.section('🚌 Транспорт');
@@ -223,6 +223,19 @@ export class UI {
     this.slider(ec, 'Уровень цен', 'priceLevel', 0.3, 3, 0.05, x, undefined, 'Цены в кафе, магазинах, такси. Дорого — люди сидят дома.');
     this.slider(ec, 'Аренда жилья', 'rent', 0, 3, 0.05, x);
     this.slider(ec, 'Цель по безработице', 'unemployment', 0, 0.6, 0.01, pct, undefined, 'Каждое утро рабочего дня кого-то нанимают или увольняют.');
+
+    // симуляция
+    const si = this.section('⚙️ Симуляция');
+    const x2 = (v: number) => (v === 0 ? 'выкл' : `×${v.toFixed(1)}`);
+    this.slider(si, '👶 Рождаемость', 'birthRate', 0, 5, 0.1, x2, undefined, 'Пары рожают детей; малыши растут: садик → школа → вуз или работа.');
+    this.slider(si, '📅 Один «год» длится', 'yearDays', 5, 120, 1, (v) => `${v} дн.`, undefined, 'Как часто дни рождения — и как быстро взрослеют дети.');
+    this.slider(si, '🧳 Переезды в город и из города', 'migration', 0, 5, 0.1, x2);
+    this.slider(si, '💘 Влюблённости', 'loveRate', 0, 5, 0.1, x2);
+    this.slider(si, '🗣️ Общительность горожан', 'sociability', 0.3, 3, 0.05, x, undefined, 'Выше — чаще гуляют, ходят в кафе и в гости; ниже — сидят дома.');
+    this.slider(si, '⏰ Шанс проспать будильник', 'oversleep', 0, 4, 0.1, x2);
+    this.slider(si, '💥 Аварийность на дорогах', 'accidentRate', 0, 5, 0.1, x2);
+    this.slider(si, '🔥 Пожары', 'fireRate', 0, 5, 0.1, x2);
+    this.slider(si, '🤒 Заболеваемость', 'sickness', 0, 4, 0.1, x2);
 
     // события
     const ev = this.section('🎲 События', true);
@@ -245,7 +258,11 @@ export class UI {
 
     // вид
     const v = this.section('👁 Вид');
-    v.append(el('div', { class: 'hint' }, 'Качество графики (на телефоне — среднее или низкое):'));
+    this.toggle(v, 'Подписи над выбранным', 'labels');
+    this.toggle(v, 'Тепловая карта пробок', 'heatmap');
+    this.toggle(v, 'Маршруты автобусов', 'showRoutes');
+    const gr = this.section('🖥 Графика');
+    gr.append(el('div', { class: 'hint' }, 'Готовые наборы (на телефоне — среднее или низкое):'));
     const qc = el('div', { class: 'chips' });
     for (const [q, name] of [['low', '🔋 низкое'], ['medium', '⚖️ среднее'], ['high', '✨ высокое']] as const) {
       const c = el('span', { class: 'chip' }, name);
@@ -253,11 +270,32 @@ export class UI {
       qc.append(c);
       this.bindings.push(() => c.classList.toggle('on', this.p.quality === q));
     }
-    v.append(qc);
-    this.toggle(v, 'Тени', 'shadows');
-    this.toggle(v, 'Подписи над выбранным', 'labels');
-    this.toggle(v, 'Тепловая карта пробок', 'heatmap');
-    this.toggle(v, 'Маршруты автобусов', 'showRoutes');
+    gr.append(qc);
+    const g = () => this.hooks.graphics();
+    this.slider(gr, 'Разрешение', 'renderScale', 0.4, 1.5, 0.05, (v) => `${Math.round(v * 100)}%`, g, 'Ниже — быстрее и меньше греется телефон.');
+    this.toggle(gr, 'Тени', 'shadows', g);
+    const sr = el('div', { class: 'chips' });
+    for (const [r, name] of [['low', 'тени: мягкие (быстрее)'], ['high', 'тени: чёткие']] as const) {
+      const c = el('span', { class: 'chip' }, name);
+      c.onclick = () => { this.hooks.click(); this.p.shadowRes = r; g(); this.syncAll(); };
+      sr.append(c);
+      this.bindings.push(() => c.classList.toggle('on', this.p.shadowRes === r));
+    }
+    gr.append(sr);
+    this.slider(gr, 'Дождь, снег и облака', 'precipDensity', 0.1, 1, 0.05, (v) => `${Math.round(v * 100)}%`, g);
+    this.slider(gr, 'Дальность видимости', 'drawDistance', 0.4, 1.6, 0.05, x, g);
+    this.slider(gr, 'Людей на экране, максимум', 'maxVisible', 100, 1400, 50, (v) => String(v), g);
+    const fl = el('div', { class: 'chips' });
+    for (const [f, name] of [[30, '30 кадров/с (экономно)'], [60, '60'], [0, 'без ограничения']] as const) {
+      const c = el('span', { class: 'chip' }, name);
+      c.onclick = () => { this.hooks.click(); this.p.fpsLimit = f; g(); this.syncAll(); };
+      fl.append(c);
+      this.bindings.push(() => c.classList.toggle('on', this.p.fpsLimit === f));
+    }
+    gr.append(el('div', { class: 'hint' }, 'Частота кадров:'), fl);
+    this.toggle(gr, 'Деревья качаются на ветру', 'treeSway', g);
+    this.toggle(gr, 'Показывать FPS', 'showFps', g);
+
     const snd = this.section('🔊 Звук');
     this.toggle(snd, 'Без звука', 'muted', () => this.hooks.sound());
     this.slider(snd, 'Общая громкость', 'volume', 0, 1, 0.01, (x) => `${Math.round(x * 100)}%`, () => this.hooks.sound());
@@ -355,7 +393,7 @@ export class UI {
     const ae = this.q('#active-ev');
     ae.innerHTML = evs.length ? evs.map((e) => `<div class="active-ev" data-x="${e.focus?.x ?? ''}" data-z="${e.focus?.z ?? ''}">${e.def.emoji} ${esc(e.title)}<span class="t">до ${fmtTime(e.end)}</span></div>`).join('') : '<div class="hint">Всё спокойно.</div>';
     ae.querySelectorAll<HTMLElement>('.active-ev').forEach((d) => (d.onclick = () => { if (d.dataset.x) this.hooks.focus(parseFloat(d.dataset.x), parseFloat(d.dataset.z!)); }));
-    this.q('#econ').innerHTML = `<span>заработано вчера</span><span>${Math.round(sim.stats.earnedToday)}₽</span><span>потрачено вчера</span><span>${Math.round(sim.stats.spentToday)}₽</span><span>сегодня заработано</span><span>${Math.round(sim.stats.earned)}₽</span><span>опозданий сегодня</span><span>${sim.stats.lateArrivals}</span>`;
+    this.q('#econ').innerHTML = `<span>заработано вчера</span><span>${Math.round(sim.stats.earnedToday)}₽</span><span>потрачено вчера</span><span>${Math.round(sim.stats.spentToday)}₽</span><span>сегодня заработано</span><span>${Math.round(sim.stats.earned)}₽</span><span>опозданий сегодня</span><span>${sim.stats.lateArrivals}</span><span>родилось детей</span><span>${sim.stats.births}</span><span>уехало жителей</span><span>${sim.stats.departures}</span><span>детей до 7 лет</span><span>${sim.citizens.filter((c) => c.alive && c.age < 7).length}</span>`;
     this.renderNews();
     this.renderInspector();
   }

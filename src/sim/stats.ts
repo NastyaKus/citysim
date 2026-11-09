@@ -29,6 +29,8 @@ export class Stats {
   earnedToday = 0;
   spentToday = 0;
   lateArrivals = 0;
+  births = 0;
+  departures = 0;
   lateToday = 0;
   tripTimeSum = 0;
   tripTimeN = 0;

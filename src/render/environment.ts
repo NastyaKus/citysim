@@ -63,6 +63,8 @@ export class Environment {
   night = 0;
   /** множитель плотности осадков и облаков (качество) */
   scale = 1;
+  /** множитель плотности тумана (дальность прорисовки) */
+  fogMul = 1;
   daylight = 1;
   horizon = new THREE.Color();
   sunDir = new THREE.Vector3();
@@ -269,7 +271,7 @@ export class Environment {
     // туман
     const fog = this.scene.fog as THREE.FogExp2;
     fog.color.copy(hor);
-    fog.density = 0.0011 + w.fog * 0.011 + w.intensity * 0.0025 + (w.def.id === 'blizzard' ? 0.006 : 0);
+    fog.density = (0.0011 + w.fog * 0.011 + w.intensity * 0.0025 + (w.def.id === 'blizzard' ? 0.006 : 0)) * this.fogMul;
 
     // облака
     const nClouds = Math.round((clamp(cloud) * 68 + 2) * (0.5 + 0.5 * this.scale));

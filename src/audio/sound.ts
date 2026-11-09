@@ -28,6 +28,14 @@ export class Sound {
   private beatAt = 0;
   private listener: Listener = { x: 0, z: 0, rx: 1, rz: 0, height: 100 };
   private t = 0;
+  private scanAt = 0;
+  private scan = { traffic: 0, trafficPan: 0, idle: 0, peds: 0, pedPan: 0, kids: 0, kidsPan: 0, build: 0, buildPan: 0, cafe: 0, cafePan: 0, bar: 0, barPan: 0, dogs: 0, dogPan: 0, square: 0, squarePan: 0, park: 0, parkPan: 0, pond: 0, pondPan: 0, tick: 0, tickPan: 0, music: 0, musicPan: 0 };
+  private whooshed = new Map<number, number>();
+  private engine1!: OscillatorNode;
+  private barBeatAt = 0;
+  private melodyAt = 0;
+  private melodyStep = 0;
+  private planeAt = 120 + Math.random() * 200;
 
   constructor(private sim: Sim) {}
 
@@ -118,6 +126,177 @@ export class Sound {
     this.sirenOsc.start();
     this.sirenOsc2.start();
     this.loops.siren = { gain: sg, target: 0 };
+    // поток машин (шорох шин) и моторы на светофорах
+    this.loops.traffic = this.noiseLoop([['bandpass', 650, 0.6], ['lowpass', 2600, 0.7]]);
+    const eg = ctx.createGain();
+    eg.gain.value = 0;
+    const elp = ctx.createBiquadFilter();
+    elp.type = 'lowpass';
+    elp.frequency.value = 170;
+    this.engine1 = ctx.createOscillator();
+    this.engine1.type = 'sawtooth';
+    this.engine1.frequency.value = 48;
+    const e2 = ctx.createOscillator();
+    e2.type = 'square';
+    e2.frequency.value = 73;
+    const e2g = ctx.createGain();
+    e2g.gain.value = 0.35;
+    this.engine1.connect(elp);
+    e2.connect(e2g).connect(elp);
+    elp.connect(eg).connect(this.amb);
+    this.engine1.start();
+    e2.start();
+    this.loops.engine = { gain: eg, target: 0 };
+    // гул голосов
+    const mur = this.noiseLoop([['bandpass', 420, 1.3], ['lowpass', 1200, 0.7]]) as Loop & { filters: BiquadFilterNode[] };
+    const ml = ctx.createOscillator();
+    ml.frequency.value = 0.7;
+    const mlg = ctx.createGain();
+    mlg.gain.value = 140;
+    ml.connect(mlg).connect(mur.filters[0].frequency);
+    ml.start();
+    this.loops.murmur = mur;
+  }
+
+  /** колокольчик на двери магазина */
+  shopBell(x: number, z: number) {
+    if (!this.ready) return;
+    const s = this.spatial(x, z, 12);
+    if (s.g < 0.05) return;
+    this.tone(2637, 'sine', 0.5, 0.06 * s.g, s.pan, undefined, 0, 0.003);
+    this.tone(3520, 'sine', 0.4, 0.04 * s.g, s.pan, undefined, 0.07, 0.003);
+  }
+
+  private whoosh(pan0: number, vol: number, heavy: boolean) {
+    const ctx = this.ctx!;
+    const t0 = ctx.currentTime;
+    const dur = heavy ? 1.3 : 0.9;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    const f = ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.Q.value = 0.8;
+    f.frequency.setValueAtTime(heavy ? 300 : 500, t0);
+    f.frequency.linearRampToValueAtTime(heavy ? 700 : 1300, t0 + dur * 0.45);
+    f.frequency.linearRampToValueAtTime(heavy ? 250 : 450, t0 + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(vol, t0 + dur * 0.45);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    const p = ctx.createStereoPanner();
+    p.pan.setValueAtTime(pan0, t0);
+    p.pan.linearRampToValueAtTime(-pan0, t0 + dur);
+    src.connect(f).connect(g).connect(p).connect(this.fx);
+    src.start(t0, Math.random());
+    src.stop(t0 + dur + 0.05);
+  }
+
+  private airplane() {
+    const ctx = this.ctx!;
+    const t0 = ctx.currentTime;
+    const dur = 16;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
+    const f = ctx.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.setValueAtTime(250, t0);
+    f.frequency.linearRampToValueAtTime(520, t0 + dur * 0.5);
+    f.frequency.linearRampToValueAtTime(200, t0 + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(0.16, t0 + dur * 0.5);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    const p = ctx.createStereoPanner();
+    const side = Math.random() < 0.5 ? -1 : 1;
+    p.pan.setValueAtTime(side * 0.8, t0);
+    p.pan.linearRampToValueAtTime(-side * 0.8, t0 + dur);
+    src.connect(f).connect(g).connect(p).connect(this.amb);
+    src.start(t0);
+    src.stop(t0 + dur + 0.1);
+  }
+
+  /** обзор окрестностей слушателя для городских звуков */
+  private doScan() {
+    const sim = this.sim;
+    const S = this.scan;
+    for (const k of Object.keys(S) as (keyof typeof S)[]) S[k] = 0;
+    const L = this.listener;
+    const best = (g: number, pan: number, key: keyof typeof S, panKey: keyof typeof S) => { if (g > S[key]) { S[key] = g; S[panKey] = pan; } };
+    // машины
+    let tr = 0, trPan = 0;
+    for (const v of sim.transport.vehicles) {
+      if (v.done) continue;
+      const s = this.spatial(v.x, v.z, 20);
+      if (s.g < 0.01) continue;
+      const moving = Math.min(1, v.v / 18);
+      tr += s.g * (0.25 + moving) * (v.type === 'bus' || v.type === 'truck' || v.type === 'garbage' || v.type === 'firetruck' ? 1.8 : 1);
+      trPan += s.pan * s.g;
+      if (v.v < 2) S.idle += s.g * (v.type === 'bus' || v.type === 'truck' ? 1.6 : 1);
+      // проезжает рядом — шорох
+      const d = Math.hypot(v.x - L.x, v.z - L.z);
+      if (d < 10 && v.v > 9 && L.height < 60) {
+        const last = this.whooshed.get(v.id) ?? -9;
+        if (this.t - last > 3) { this.whooshed.set(v.id, this.t); this.whoosh(Math.sign(s.pan || 0.3) * 0.7, 0.22 * Math.max(0.3, 1 - d / 10), v.len > 6); }
+      }
+      if (v.type === 'garbage' && v.dwell > 0 && s.g > 0.05 && Math.random() < 0.3) for (let i = 0; i < 3; i++) this.tone(1050, 'square', 0.18, 0.03 * s.g, s.pan, undefined, i * 0.45);
+    }
+    S.traffic = tr;
+    S.trafficPan = tr > 0 ? trPan / Math.max(0.0001, tr) : 0;
+    if (this.whooshed.size > 300) this.whooshed.clear();
+    // люди на улице
+    let pc = 0, pPan = 0;
+    for (const c of sim.citizens) {
+      if (!c.alive || !(c.state === 'walk' || c.state === 'outdoor' || c.state === 'waitBus' || c.state === 'waitTaxi')) continue;
+      const s = this.spatial(c.x, c.z, 14);
+      if (s.g < 0.02) continue;
+      pc += s.g;
+      pPan += s.pan * s.g;
+      if (c.hasDog && (c.act?.id === 'dogwalk' || c.trip?.act.id === 'dogwalk')) best(s.g, s.pan, 'dogs', 'dogPan');
+      if (c.act?.id === 'street_music' || (c.job.id === 'musician' && c.act?.id === 'work' && c.state === 'outdoor')) best(s.g, s.pan, 'music', 'musicPan');
+    }
+    S.peds = pc;
+    S.pedPan = pc > 0 ? pPan / pc : 0;
+    // места
+    const h = sim.clock.hour;
+    for (const b of sim.world.buildings) {
+      const s = this.spatial(b.x, b.z, 26);
+      if (s.g < 0.02) continue;
+      const n = b.inside.size;
+      switch (b.type) {
+        case 'playground': case 'school': case 'kindergarten':
+          if (h > 8 && h < 19 && n > 0) {
+            const kidsOut = [...b.inside].filter((id) => { const k = sim.citizens[id]; return k && k.age < 14; }).length;
+            if (kidsOut) best(s.g * Math.min(1, kidsOut / 6), s.pan, 'kids', 'kidsPan');
+          }
+          break;
+        case 'construction':
+          if (n > 0 && b.growth < 1 && h > 7 && h < 19) best(s.g, s.pan, 'build', 'buildPan');
+          break;
+        case 'cafe': case 'coffee': case 'restaurant': case 'pizzeria': case 'bakery':
+          if (n > 0) best(s.g * Math.min(1, n / 4), s.pan, 'cafe', 'cafePan');
+          break;
+        case 'bar': case 'club':
+          if (n > 2 && (h > 19 || h < 4)) best(s.g * Math.min(1, n / 8), s.pan, 'bar', 'barPan');
+          break;
+        case 'square':
+          best(s.g, s.pan, 'square', 'squarePan');
+          if (n > 3) best(s.g * 0.6, s.pan, 'music', 'musicPan');
+          break;
+        case 'park':
+          best(s.g, s.pan, 'park', 'parkPan');
+          break;
+        case 'pond':
+          best(s.g, s.pan, 'pond', 'pondPan');
+          break;
+      }
+    }
+    // пешеходный светофор рядом
+    if (L.height < 40) for (const nd of sim.world.nodes) {
+      if (!nd.hasLight) continue;
+      const s = this.spatial(nd.x, nd.z, 8);
+      if (s.g > S.tick) { S.tick = s.g; S.tickPan = s.pan; }
+    }
   }
 
   private noiseLoop(filters: [BiquadFilterType, number, number][], pan?: StereoPannerNode): Loop {
@@ -322,6 +501,77 @@ export class Sound {
     const cars = sim.stats.current.cars;
     // город
     this.set('hum', (0.08 + 0.18 * daylight + cars * 0.003 + congestion * 0.12) * (0.6 + 0.4 * hk) * quiet);
+    // городской слой
+    this.scanAt -= dt;
+    if (this.scanAt <= 0) { this.scanAt = 0.25; this.doScan(); }
+    const S = this.scan;
+    const nightK = 1 - daylight;
+    this.set('traffic', Math.min(0.5, S.traffic * 0.18) * quiet);
+    this.set('engine', Math.min(0.35, S.idle * 0.12) * quiet);
+    if (this.ctx && S.idle > 0.01) this.engine1.frequency.setTargetAtTime(44 + Math.sin(this.t * 1.7) * 3, this.ctx.currentTime, 0.2);
+    this.set('murmur', Math.min(0.4, S.peds * 0.05) * quiet * (paused ? 0.5 : 1));
+    if (S.peds > 0.6 && this.every('voice', dt, Math.min(2.5, S.peds * 0.25))) {
+      const pan = S.pedPan + (Math.random() - 0.5) * 0.8;
+      const f0 = Math.random() < 0.5 ? 170 + Math.random() * 60 : 230 + Math.random() * 90;
+      const n = 2 + Math.floor(Math.random() * 4);
+      for (let i = 0; i < n; i++) this.tone(f0 * (0.85 + Math.random() * 0.35), 'triangle', 0.1 + Math.random() * 0.08, 0.025, pan, f0 * (0.8 + Math.random() * 0.3), i * 0.13, 0.02);
+      if (Math.random() < 0.08) for (let i = 0; i < 4; i++) this.tone(f0 * 1.6, 'triangle', 0.08, 0.03, pan, f0 * 1.3, i * 0.11, 0.01); // смех
+    }
+    // дети на площадке и у школы
+    if (S.kids > 0.03 && this.every('kids', dt, 2.2 * S.kids + 0.3)) {
+      const f0 = 420 + Math.random() * 380;
+      const pan = S.kidsPan + (Math.random() - 0.5) * 0.6;
+      const n = 2 + Math.floor(Math.random() * 3);
+      for (let i = 0; i < n; i++) this.tone(f0 * (0.9 + Math.random() * 0.5), 'triangle', 0.12, 0.05 * S.kids, pan, f0 * (1.1 + Math.random() * 0.6), i * 0.12, 0.01);
+    }
+    // стройка: молоток и дрель
+    if (S.build > 0.03) {
+      if (this.every('hammer', dt, 1.6)) for (let i = 0; i < 3; i++) this.burst(0.06, 'bandpass', 900 + Math.random() * 300, 0.4 * S.build, S.buildPan, i * 0.32, 2.5, 0.002);
+      if (this.every('drill', dt, 0.12)) {
+        const dur = 1 + Math.random() * 1.5;
+        this.tone(190, 'sawtooth', dur, 0.05 * S.build, S.buildPan, 230, 0, 0.08);
+        this.tone(380, 'square', dur, 0.015 * S.build, S.buildPan, 460, 0, 0.08);
+      }
+    }
+    // звон чашек у кафе
+    if (S.cafe > 0.04 && this.every('clink', dt, 1.3 * S.cafe)) this.tone(2600 + Math.random() * 1400, 'sine', 0.25, 0.06 * S.cafe, S.cafePan, undefined, 0, 0.002);
+    // басы из бара ночью (приглушённо)
+    if (S.bar > 0.03 && !paused) {
+      this.barBeatAt -= dt;
+      if (this.barBeatAt <= 0) {
+        this.barBeatAt += 0.5;
+        this.tone(75, 'sine', 0.25, 0.22 * S.bar, S.barPan, 40, 0, 0.004);
+      }
+    }
+    // уличный музыкант: пентатоника
+    if (S.music > 0.05 && !paused && daylight > 0.2) {
+      this.melodyAt -= dt;
+      if (this.melodyAt <= 0) {
+        const scale = [0, 2, 4, 7, 9, 12, 14, 16];
+        this.melodyAt = 0.32 + (this.melodyStep % 4 === 3 ? 0.3 : 0);
+        this.melodyStep = (this.melodyStep + 1 + Math.floor(Math.random() * 3)) % 64;
+        const note = 262 * Math.pow(2, scale[(this.melodyStep * 3 + (this.melodyStep >> 2)) % scale.length] / 12);
+        this.tone(note, 'triangle', 0.6, 0.07 * S.music, S.musicPan, undefined, 0, 0.004);
+        if (this.melodyStep % 4 === 0) this.tone(note / 2, 'sine', 0.8, 0.05 * S.music, S.musicPan);
+      }
+    }
+    // собаки иногда лают
+    if (S.dogs > 0.05 && this.every('dogbark', dt, 0.08)) { const p = S.dogPan; for (let i = 0; i < 2; i++) { this.tone(480, 'square', 0.1, 0.05 * S.dogs, p, 300, i * 0.2); this.burst(0.08, 'bandpass', 900, 0.12 * S.dogs, p, i * 0.2, 1.5); } }
+    // голуби в сквере днём
+    if (S.square > 0.05 && daylight > 0.5 && this.every('coo', dt, 0.35 * S.square)) for (let i = 0; i < 2; i++) this.tone(330, 'sine', 0.35, 0.04 * S.square, S.squarePan, 260, i * 0.4, 0.05);
+    // сова в парке ночью
+    if (S.park > 0.05 && nightK > 0.7 && this.every('owl', dt, 0.05 * S.park)) { this.tone(420, 'sine', 0.45, 0.06 * S.park, S.parkPan, 380, 0, 0.08); this.tone(400, 'sine', 0.7, 0.05 * S.park, S.parkPan, 350, 0.6, 0.08); }
+    // лягушки у пруда тёплыми вечерами
+    if (S.pond > 0.05 && nightK > 0.4 && w.temp > 12 && this.every('frog', dt, 1.2 * S.pond)) for (let i = 0; i < 3; i++) this.tone(180 + Math.random() * 40, 'square', 0.06, 0.025 * S.pond, S.pondPan + (Math.random() - 0.5) * 0.5, 140, i * 0.08, 0.005);
+    // тиканье пешеходного светофора
+    if (S.tick > 0.1 && this.every('tick', dt, 1.6)) this.tone(1500, 'square', 0.025, 0.025 * S.tick, S.tickPan, undefined, 0, 0.002);
+    // самолёт пролетает
+    this.planeAt -= dt;
+    if (this.planeAt <= 0) {
+      this.planeAt = 180 + Math.random() * 300;
+      if (!w.raining) this.airplane();
+    }
+
     // осадки и ветер
     const rain = (w.def.precip === 'rain' || w.def.precip === 'sleet') ? w.intensity : 0;
     this.set('rain', rain * 0.9 * quiet);

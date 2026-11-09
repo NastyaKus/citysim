@@ -17,7 +17,7 @@ import { Sound } from './audio/sound';
 import { isTouch, canFullscreen, toggleFullscreen, lockLandscape, setupRotateHint, isStandalone } from './ui/mobile';
 import type { Params } from './sim/params';
 
-const SAVE_KEYS = ['volume', 'ambVolume', 'fxVolume', 'muted', 'quality'] as const;
+const SAVE_KEYS = ['volume', 'ambVolume', 'fxVolume', 'muted', 'quality', 'renderScale', 'shadows', 'shadowRes', 'precipDensity', 'fpsLimit', 'showFps', 'treeSway', 'maxVisible', 'drawDistance'] as const;
 function loadPrefs(): Partial<Params> {
   try {
     const raw = localStorage.getItem('citysim-prefs');
@@ -81,25 +81,41 @@ async function main() {
   const fx = new FxRenderer(sim);
   scene.add(fx.group);
   const sound = new Sound(sim);
+  sim.onEnter = (b) => { if (['shop', 'food', 'health'].includes(b.def.cat) || b.type === 'post' || b.type === 'bank') sound.shopBell(b.entrance.pos.x, b.entrance.pos.z); };
   fx.onBurst = (x, z) => sound.firework(x, z);
 
   // ——— качество графики
-  function applyQuality(q: Params['quality']) {
-    sim.params.quality = q;
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, q === 'high' ? 1.75 : q === 'medium' ? 1.25 : 1));
+  const PRESETS: Record<Params['quality'], Partial<Params>> = {
+    low: { renderScale: 0.75, shadows: false, shadowRes: 'low', precipDensity: 0.3, fpsLimit: 30, treeSway: false, maxVisible: 300, drawDistance: 0.75 },
+    medium: { renderScale: 1, shadows: true, shadowRes: 'low', precipDensity: 0.55, fpsLimit: 0, treeSway: true, maxVisible: 700, drawDistance: 1 },
+    high: { renderScale: 1, shadows: true, shadowRes: 'high', precipDensity: 1, fpsLimit: 0, treeSway: true, maxVisible: 1400, drawDistance: 1 },
+  };
+  function applyGraphics() {
+    const p = sim.params;
+    const base = Math.min(window.devicePixelRatio, p.quality === 'high' ? 1.75 : 1.25);
+    renderer.setPixelRatio(Math.max(0.4, base * p.renderScale));
     renderer.setSize(window.innerWidth, window.innerHeight);
-    const size = q === 'high' ? 2048 : 1024;
+    const size = p.shadowRes === 'high' ? 2048 : 1024;
     if (env.sun.shadow.mapSize.x !== size) {
       env.sun.shadow.mapSize.set(size, size);
       env.sun.shadow.map?.dispose();
       (env.sun.shadow as unknown as { map: null }).map = null;
     }
-    if (q === 'low') sim.params.shadows = false;
-    else if (q === 'high') sim.params.shadows = true;
-    env.scale = q === 'high' ? 1 : q === 'medium' ? 0.55 : 0.3;
-    savePrefs(sim.params);
+    env.scale = p.precipDensity;
+    env.fogMul = 1 / Math.max(0.3, p.drawDistance);
+    fpsEl.hidden = !p.showFps;
+    savePrefs(p);
   }
-  applyQuality(sim.params.quality);
+  function applyQuality(q: Params['quality']) {
+    sim.params.quality = q;
+    Object.assign(sim.params, PRESETS[q]);
+    applyGraphics();
+  }
+  const fpsEl = document.createElement('div');
+  fpsEl.id = 'fps';
+  document.getElementById('app')!.append(fpsEl);
+  if (!prefs.renderScale) Object.assign(sim.params, PRESETS[sim.params.quality]);
+  applyGraphics();
 
   // тепловая карта пробок
   const heat = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55, depthWrite: false }), sim.world.edges.length);
@@ -141,6 +157,7 @@ async function main() {
     fullscreen: () => { void toggleFullscreen(); },
     canFullscreen: () => canFullscreen() && !isStandalone(),
     quality: (q) => applyQuality(q),
+    graphics: () => applyGraphics(),
     sound: () => { sound.unlock(); sound.applyVolumes(); savePrefs(sim.params); },
     click: () => sound.play('click'),
   });
@@ -306,7 +323,14 @@ async function main() {
     if (city.windows.instanceColor) city.windows.instanceColor.needsUpdate = true;
   }
 
-  function frame() {
+  let lastFrameAt = 0, fpsCount = 0, fpsAt = 0;
+  function frame(now: number) {
+    requestAnimationFrame(frame);
+    const lim = sim.params.fpsLimit;
+    if (lim > 0 && now - lastFrameAt < 1000 / lim - 2) return;
+    lastFrameAt = now;
+    fpsCount++;
+    if (now - fpsAt > 1000) { fpsEl.textContent = `${fpsCount} FPS`; fpsCount = 0; fpsAt = now; }
     const dt = Math.min(0.1, clock.getDelta());
     time += dt;
     // перемотка
@@ -415,7 +439,7 @@ async function main() {
     else if (time >= 7.5 && !fpsChecked) {
       fpsChecked = true;
       const fps = fpsFrames / 6;
-      if (fps < 28 && sim.params.quality !== 'low') {
+      if (fps < 28 && sim.params.quality !== 'low' && !prefs.quality) {
         applyQuality(sim.params.quality === 'high' ? 'medium' : 'low');
         ui.syncAll();
         sim.news.push('⚙️', `Графика упрощена для плавности (${Math.round(fps)} кадров/с). Можно поменять в разделе «Вид»`, 'city');
@@ -463,7 +487,6 @@ async function main() {
 
     if (time - uiAt > 0.25) { uiAt = time; ui.update(); }
     renderer.render(scene, camera);
-    requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 }

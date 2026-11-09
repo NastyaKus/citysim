@@ -19,7 +19,7 @@ export interface ActivityDef {
   base: number;
   outdoor?: boolean;
   weather?: { rain?: number; snow?: number; cold?: number; hot?: number; sunny?: number; wind?: number; dark?: number };
-  requires?: 'dog' | 'bike' | 'car' | 'partner' | 'friend' | 'snowOnGround' | 'kids' | 'sick';
+  requires?: 'dog' | 'bike' | 'car' | 'partner' | 'friend' | 'snowOnGround' | 'kids' | 'sick' | 'baby';
   social?: boolean;
   eventOnly?: boolean;
 }
@@ -86,6 +86,8 @@ export const ACTIVITIES: ActivityDef[] = [
   { id: 'snowballs', label: 'играет в снежки', diary: 'устроил{|а} битву снежками', emoji: '❄️', places: ['park', 'playground', 'square'], hours: [[10, 19]], dur: [30, 60], effects: { fun: 35, social: 20, energy: -8 }, cost: 0, ages: [5, 45], tags: ['outdoor', 'winter', 'social'], base: 2, outdoor: true, social: true, requires: 'snowOnGround' },
   { id: 'playground', label: 'на детской площадке', diary: 'побегал{|а} на площадке', emoji: '🛝', places: ['playground', 'park'], hours: [[9, 20]], dur: [40, 90], effects: { fun: 30, social: 20, energy: -8 }, cost: 0, ages: [2, 11], tags: ['outdoor', 'kids'], base: 2, outdoor: true, weather: { rain: 0.2, snow: 0.8, cold: 0.5, sunny: 1.5 } },
   { id: 'walk_kids', label: 'гуляет с ребёнком', diary: 'вывел{|а} ребёнка на площадку', emoji: '👶', places: ['playground', 'park'], hours: [[10, 19]], dur: [40, 80], effects: { fun: 10, social: 15 }, cost: 0, ages: [20, 70], tags: ['outdoor', 'kids'], base: 0.4, outdoor: true, requires: 'kids', weather: { rain: 0.2, sunny: 1.5 } },
+  { id: 'stroller', label: 'гуляет с коляской', diary: 'вывез{|ла} малыша в коляске на прогулку', emoji: '👶', places: ['park', 'square', 'pond', 'playground'], hours: [[9, 20]], dur: [40, 90], effects: { fun: 12, social: 10, health: 5 }, cost: 0, ages: [18, 70], tags: ['outdoor', 'kids', 'nature'], base: 2.5, outdoor: true, requires: 'baby', weather: { rain: 0.1, snow: 0.6, cold: 0.4, sunny: 1.6, dark: 0.2 } },
+  { id: 'maternity', label: 'в роддоме', diary: 'в роддоме — скоро всё случится!', emoji: '🏥', places: ['hospital'], hours: ALLDAY, dur: [240, 360], effects: { energy: -2 }, cost: 0, ages: [16, 50], tags: [], base: 0, eventOnly: true },
   { id: 'bike_ride', label: 'катается на велике', diary: 'покатался{|ась} на велике', emoji: '🚲', places: ['park', 'pond', 'stadium'], hours: [[8, 21]], dur: [40, 90], effects: { fun: 22, health: 14, energy: -10 }, cost: 0, ages: [7, 75], tags: ['sport', 'outdoor', 'nature'], base: 0.3, outdoor: true, requires: 'bike', weather: { rain: 0.1, snow: 0.05, cold: 0.4, sunny: 1.8 } },
   { id: 'football', label: 'гоняет мяч на стадионе', diary: 'погонял{|а} мяч с ребятами', emoji: '⚽', places: ['stadium', 'school'], hours: [[15, 21]], dur: [60, 120], effects: { fun: 30, health: 12, social: 25, energy: -15 }, cost: 0, ages: [8, 50], tags: ['sport', 'social', 'outdoor'], base: 0.3, outdoor: true, social: true, weather: { rain: 0.2, snow: 0.3, sunny: 1.4 } },
 

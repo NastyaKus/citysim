@@ -32,6 +32,24 @@ export interface Params {
   heatmap: boolean;
   labels: boolean;
   quality: 'low' | 'medium' | 'high';
+  // симуляция
+  birthRate: number;
+  migration: number;
+  loveRate: number;
+  yearDays: number;
+  sociability: number;
+  oversleep: number;
+  accidentRate: number;
+  fireRate: number;
+  // графика
+  renderScale: number;
+  shadowRes: 'low' | 'high';
+  precipDensity: number;
+  fpsLimit: number;
+  showFps: boolean;
+  treeSway: boolean;
+  maxVisible: number;
+  drawDistance: number;
   volume: number;
   ambVolume: number;
   fxVolume: number;
@@ -69,6 +87,22 @@ export const DEFAULT_PARAMS: Params = {
   heatmap: false,
   labels: true,
   quality: 'high',
+  birthRate: 1,
+  migration: 1,
+  loveRate: 1,
+  yearDays: 30,
+  sociability: 1,
+  oversleep: 1,
+  accidentRate: 1,
+  fireRate: 1,
+  renderScale: 1,
+  shadowRes: 'high',
+  precipDensity: 1,
+  fpsLimit: 0,
+  showFps: false,
+  treeSway: true,
+  maxVisible: 1400,
+  drawDistance: 1,
   volume: 0.8,
   ambVolume: 0.8,
   fxVolume: 0.9,

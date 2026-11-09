@@ -226,3 +226,4 @@ body.play-mode .collapse-btn, body.play-mode #label, body.play-mode #topbar, bod
 .rh-text { font-size: 17px; max-width: 300px; line-height: 1.4; }
 @keyframes rot { 0%, 30% { transform: rotate(0); } 60%, 100% { transform: rotate(-90deg); } }
 @media (prefers-reduced-motion: reduce) { .rh-phone { animation: none; } }
+#fps { position: fixed; left: 50%; bottom: max(50px, env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 30; background: rgba(0,0,0,.55); color: #7ee08a; font: 600 11px ui-monospace, monospace; padding: 2px 7px; border-radius: 6px; pointer-events: none; }

@@ -140,7 +140,7 @@ export class Brain {
           let late = 0;
           for (const t of c.traits) late += t.late ?? 0;
           if (sim.weather.def.precip === 'snow' && sim.weather.intensity > 0.8) late += 0.2;
-          if (c.at === c.home && this.rng.chance(clamp(0.05 + late)) && c.job.kind !== 'kinder') {
+          if (c.at === c.home && this.rng.chance(clamp((0.05 + late) * sim.params.oversleep)) && c.job.kind !== 'kinder') {
             c.lateUntil = now + this.rng.range(15, 45);
             this.log(c, gender('проспал{|а} будильник', c.female));
             return this.startHere(c, ACTIVITY_BY_ID.tv, c.lateUntil - now, c.home);
@@ -276,8 +276,9 @@ export class Brain {
         if (act.places !== 'home') dMul *= 1 / (1 + discomfort * 0.4);
       } else dMul = 1.25;
       // выходные — больше досуга
+      const socMul = act.places === 'home' ? 1 / Math.max(0.2, p.sociability) : p.sociability;
       const weekendMul = this.clock.isWeekend && !act.tags.includes('work') && act.places !== 'home' ? 1.35 : 1;
-      const score = baseW * need * tagMul * wMul * mMul * dMul * weekendMul * place.attraction * this.rng.range(0.6, 1.4);
+      const score = baseW * need * tagMul * wMul * mMul * dMul * weekendMul * socMul * place.attraction * this.rng.range(0.6, 1.4);
       if (score <= 0.0005) return;
       const travel = place.id === c.at ? 0 : this.estimateMinutes(c, place) * (act.places === 'home' ? 1 : 2);
       const dur = Math.min(free - 10 - travel, this.rng.range(act.dur[0], act.dur[1]));
@@ -331,7 +332,8 @@ export class Brain {
       case 'partner': return c.partner >= 0;
       case 'friend': return c.friends.length > 0;
       case 'snowOnGround': return sim.weather.snowCover > 0.25 && sim.weather.temp < 3;
-      case 'kids': return c.children.some((k) => sim.citizens[k] && sim.citizens[k].age < 10);
+      case 'kids': return c.children.some((k) => sim.citizens[k] && sim.citizens[k].alive && sim.citizens[k].age < 10);
+      case 'baby': return c.children.some((k) => sim.citizens[k] && sim.citizens[k].alive && sim.citizens[k].age < 2) && c.at === c.home;
       default: return true;
     }
   }
@@ -346,7 +348,7 @@ export class Brain {
     for (const id of fs) {
       const f = sim.citizens[id];
       if (!f) continue;
-      if (atHomeOk) { if (!f.controlled && f.at === f.home && (!f.act || f.act.id !== 'sleep') && !f.trip) return f; continue; }
+      if (atHomeOk) { if (f.alive && !f.controlled && f.at === f.home && (!f.act || f.act.id !== 'sleep') && !f.trip) return f; continue; }
       if (this.isAvailable(f)) return f;
     }
     return undefined;
@@ -402,6 +404,7 @@ export class Brain {
       if (c.at >= 0) this.world.buildings[c.at]?.inside.delete(c.id);
       c.at = placeId;
       b.inside.add(c.id);
+      if (placeId !== c.home && !b.def.outdoor) sim.onEnter?.(b, c);
     } else b.inside.add(c.id);
     const outdoor = !!(act.outdoor || b.def.outdoor);
     c.state = outdoor ? 'outdoor' : 'inside';
